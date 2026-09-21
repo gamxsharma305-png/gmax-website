@@ -1,4 +1,4 @@
-export type ProviderId = "youtube" | "itunes";
+export type ProviderId = "youtube" | "itunes" | "saavn";
 
 export type Artist = {
   id: string;
@@ -19,8 +19,10 @@ export type Track = {
   isVideo?: boolean;
   /** YouTube video id — plays full length via the official iframe player. */
   videoId?: string;
-  /** iTunes / Deezer 30s preview — fallback when no video id. */
+  /** iTunes 30s preview — last-resort fallback. */
   previewUrl?: string;
+  /** Full-length direct audio stream (e.g. JioSaavn). Preferred over preview. */
+  streamUrl?: string;
 };
 
 export type Playlist = {
