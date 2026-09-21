@@ -14,17 +14,21 @@ export function normalizeTrack(raw: {
   album?: unknown;
   videoId?: unknown;
   previewUrl?: unknown;
+  streamUrl?: unknown;
   explicit?: unknown;
   isVideo?: unknown;
 }): Track | null {
   const sourceId = safeText(raw.sourceId) || safeText(raw.videoId) || safeText(raw.id);
   if (!sourceId) return null;
 
-  const provider: ProviderId = raw.provider === "youtube" ? "youtube" : "itunes";
+  let provider: ProviderId = "itunes";
+  if (raw.provider === "youtube") provider = "youtube";
+  else if (raw.provider === "saavn") provider = "saavn";
   const title = safeText(raw.title, "Unknown title");
   const artistName = safeText(raw.artistName, "Unknown artist");
   const videoId = safeText(raw.videoId);
   const previewUrl = safeUrl(raw.previewUrl);
+  const streamUrl = safeUrl(raw.streamUrl);
   const durationRaw = raw.duration;
   const duration =
     typeof durationRaw === "number" && Number.isFinite(durationRaw) && durationRaw > 0
@@ -45,6 +49,7 @@ export function normalizeTrack(raw: {
     album: safeText(raw.album) || undefined,
     videoId: videoId || undefined,
     previewUrl: previewUrl || undefined,
+    streamUrl: streamUrl || undefined,
     explicit: Boolean(raw.explicit),
     isVideo: Boolean(raw.isVideo),
   };
@@ -60,7 +65,9 @@ export function trackArtist(track: Track | null | undefined): string {
 
 export function canPlay(track: Track | null | undefined): boolean {
   if (!track) return false;
-  return Boolean(safeText(track.videoId) || safeUrl(track.previewUrl));
+  return Boolean(
+    safeText(track.videoId) || safeUrl(track.streamUrl) || safeUrl(track.previewUrl),
+  );
 }
 
 export function upscaleItunesArt(url: string): string {
