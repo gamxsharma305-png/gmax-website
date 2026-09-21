@@ -93,10 +93,12 @@ function bindEngine() {
 }
 
 async function maybeResolve(track: Track, force = false): Promise<Track> {
-  if (!force && (track.streamUrl || track.videoId || track.previewUrl)) {
-    return track;
-  }
+  if (!force && track.streamUrl) return track;
   if (!track.title) return track;
+
+  // YouTube-only tracks: still try a direct stream for background playback
+  const needStream = force || !track.streamUrl;
+  if (!needStream && (track.videoId || track.previewUrl)) return track;
 
   const token = ++resolveInflight;
   try {
@@ -107,10 +109,11 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
         ...track,
         streamUrl: resolved.streamUrl,
         duration: resolved.duration || track.duration,
+        videoId: track.videoId || resolved.videoId || undefined,
       };
     }
-    if (resolved?.videoId) {
-      return { ...track, videoId: resolved.videoId, streamUrl: undefined };
+    if (resolved?.videoId && !track.videoId) {
+      return { ...track, videoId: resolved.videoId };
     }
   } catch {
     /* fall through */
@@ -128,9 +131,7 @@ async function start(track: Track, forceResolve = false) {
     duration: track.duration || 0,
   });
 
-  const needsResolve =
-    forceResolve || (!track.streamUrl && !track.videoId && !track.previewUrl);
-  let resolved = needsResolve ? await maybeResolve(track, true) : await maybeResolve(track, false);
+  let resolved = await maybeResolve(track, forceResolve || !track.streamUrl);
 
   if (!resolved.streamUrl && !resolved.videoId && !resolved.previewUrl) {
     resolved = await maybeResolve(track, true);
@@ -244,8 +245,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       set({ index: nextIndex, error: null });
       const t = queue[nextIndex];
       if (t) {
-        const force = !t.streamUrl && !t.videoId && !t.previewUrl;
-        void start(t, force).finally(done);
+        void start(t, !t.streamUrl).finally(done);
       } else {
         enginePause();
         set({ isPlaying: false });
