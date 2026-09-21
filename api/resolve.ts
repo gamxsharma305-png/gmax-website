@@ -1,4 +1,5 @@
 import { resolveYouTubeVideo } from "../src/lib/gmax/youtube.server";
+import { resolveSaavnStream } from "../src/lib/gmax/saavn";
 
 type Req = { method?: string; body?: { title?: string; artist?: string } };
 type Res = {
@@ -17,8 +18,26 @@ export default async function handler(req: Req, res: Res) {
 
   const title = String(req.body?.title ?? "").trim();
   const artist = String(req.body?.artist ?? "").trim();
-  if (!title) return res.status(200).json({ videoId: null });
+  if (!title) return res.status(200).json({ videoId: null, streamUrl: null });
 
-  const videoId = await resolveYouTubeVideo(title, artist);
-  return res.status(200).json({ videoId });
+  try {
+    // Prefer full Saavn stream when available
+    const saavn = await resolveSaavnStream(title, artist);
+    if (saavn?.streamUrl) {
+      return res.status(200).json({
+        videoId: null,
+        streamUrl: saavn.streamUrl,
+        duration: saavn.duration ?? null,
+      });
+    }
+  } catch {
+    /* continue */
+  }
+
+  try {
+    const videoId = await resolveYouTubeVideo(title, artist);
+    return res.status(200).json({ videoId, streamUrl: null });
+  } catch {
+    return res.status(200).json({ videoId: null, streamUrl: null });
+  }
 }
