@@ -32,11 +32,31 @@ let handlers: EngineHandlers | null = null;
 let poll: number | null = null;
 let volume = 1;
 let navHandlers: { next?: () => void; prev?: () => void } = {};
+let wakeLock: WakeLockSentinel | null = null;
 
 const YT_PLAYING = 1;
 const YT_PAUSED = 2;
 const YT_ENDED = 0;
 const YT_BUFFERING = 3;
+
+async function requestWakeLock() {
+  try {
+    if (typeof navigator !== "undefined" && "wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch {
+    /* unsupported / denied */
+  }
+}
+
+async function releaseWakeLock() {
+  try {
+    await wakeLock?.release();
+  } catch {
+    /* ignore */
+  }
+  wakeLock = null;
+}
 
 function ensureAudio() {
   if (audio) return audio;
@@ -231,6 +251,7 @@ function bindMediaSession(track: Track) {
         : [],
     });
     navigator.mediaSession.playbackState = "playing";
+    void requestWakeLock();
     navigator.mediaSession.setActionHandler("play", () => {
       void engineResume();
     });
@@ -277,6 +298,9 @@ function keepAliveInBackground() {
     if (mode === "audio" && audio && !audio.paused) {
       void audio.play().catch(() => undefined);
     }
+    if (!document.hidden && mode === "audio" && audio && !audio.paused) {
+      void requestWakeLock();
+    }
   });
 }
 
@@ -306,14 +330,21 @@ export async function enginePlay(track: Track) {
       /* ignore */
     }
     const el = ensureAudio();
+    try {
+      el.pause();
+    } catch {
+      /* ignore */
+    }
     el.crossOrigin = "anonymous";
     el.src = stream;
+    el.load();
     el.volume = volume;
     try {
       await el.play();
       bindMediaSession(track);
+      void requestWakeLock();
     } catch {
-      handlers?.onError("Tap play to start audio.");
+      handlers?.onError("Couldn't play this track.");
     }
     return;
   }
@@ -331,6 +362,7 @@ export async function enginePlay(track: Track) {
       player.playVideo();
       startYtPoll();
       bindMediaSession(track);
+      void requestWakeLock();
       return;
     } catch {
       /* fall through to preview */
@@ -352,7 +384,7 @@ export async function enginePlay(track: Track) {
       await el.play();
       bindMediaSession(track);
     } catch {
-      handlers?.onError("Tap play to start audio.");
+      handlers?.onError("Couldn't play this track.");
     }
     return;
   }
@@ -362,6 +394,7 @@ export async function enginePlay(track: Track) {
 }
 
 export function enginePause() {
+  void releaseWakeLock();
   if (mode === "youtube") {
     try {
       yt?.pauseVideo();
@@ -384,6 +417,7 @@ export async function engineResume() {
   }
   try {
     await audio?.play();
+    void requestWakeLock();
   } catch {
     handlers?.onError("Tap play to resume.");
   }
@@ -413,6 +447,7 @@ export function engineSetVolume(v: number) {
 
 export function engineStop() {
   stopPoll();
+  void releaseWakeLock();
   audio?.pause();
   try {
     yt?.pauseVideo();
