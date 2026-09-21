@@ -72,8 +72,12 @@ function bindEngine() {
   });
 }
 
-async function maybeResolve(track: Track): Promise<Track> {
-  if (track.streamUrl || track.videoId || !track.title) return track;
+async function maybeResolve(track: Track, force = false): Promise<Track> {
+  if (!force && (track.streamUrl || track.videoId || track.previewUrl)) {
+    return track;
+  }
+  if (!track.title) return track;
+
   const token = ++resolveInflight;
   try {
     const resolved = await resolveVideoId(track.title, track.artist?.name ?? "");
@@ -85,14 +89,16 @@ async function maybeResolve(track: Track): Promise<Track> {
         duration: resolved.duration || track.duration,
       };
     }
-    if (resolved?.videoId) return { ...track, videoId: resolved.videoId };
+    if (resolved?.videoId) {
+      return { ...track, videoId: resolved.videoId, streamUrl: undefined };
+    }
   } catch {
-    /* preview is enough */
+    /* fall through */
   }
   return track;
 }
 
-async function start(track: Track) {
+async function start(track: Track, forceResolve = false) {
   bindEngine();
   usePlayer.setState({
     current: track,
@@ -101,8 +107,17 @@ async function start(track: Track) {
     position: 0,
     duration: track.duration || 0,
   });
-  const resolved = await maybeResolve(track);
+
+  const needsResolve =
+    forceResolve || (!track.streamUrl && !track.videoId && !track.previewUrl);
+  let resolved = needsResolve ? await maybeResolve(track, true) : await maybeResolve(track, false);
+
+  if (!resolved.streamUrl && !resolved.videoId && !resolved.previewUrl) {
+    resolved = await maybeResolve(track, true);
+  }
+
   usePlayer.setState({ current: resolved });
+
   if (!canPlay(resolved) && !resolved.videoId && !resolved.streamUrl && !resolved.previewUrl) {
     usePlayer.setState({
       isLoading: false,
@@ -110,6 +125,7 @@ async function start(track: Track) {
     });
     return;
   }
+
   await enginePlay(resolved);
   useLibrary.getState().recordPlay(resolved);
 }
@@ -249,6 +265,9 @@ export const usePlayer = create<PlayerState>((set, get) => ({
 
   retry: () => {
     const current = get().current;
-    if (current) void start(current);
+    if (current) {
+      const fresh = { ...current, streamUrl: undefined };
+      void start(fresh, true);
+    }
   },
 }));
