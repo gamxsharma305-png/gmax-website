@@ -31,6 +31,7 @@ let mode: "audio" | "youtube" = "audio";
 let handlers: EngineHandlers | null = null;
 let poll: number | null = null;
 let volume = 1;
+let navHandlers: { next?: () => void; prev?: () => void } = {};
 
 const YT_PLAYING = 1;
 const YT_PAUSED = 2;
@@ -41,11 +42,24 @@ function ensureAudio() {
   if (audio) return audio;
   audio = new Audio();
   audio.preload = "auto";
+  audio.crossOrigin = "anonymous";
   audio.setAttribute("playsinline", "true");
   audio.setAttribute("webkit-playsinline", "true");
-  audio.addEventListener("play", () => handlers?.onPlay());
+  audio.addEventListener("play", () => {
+    handlers?.onPlay();
+    try {
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+    } catch {
+      /* ignore */
+    }
+  });
   audio.addEventListener("pause", () => {
     if (mode === "audio") handlers?.onPause();
+    try {
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    } catch {
+      /* ignore */
+    }
   });
   audio.addEventListener("ended", () => {
     if (mode === "audio") handlers?.onEnded();
@@ -53,6 +67,17 @@ function ensureAudio() {
   audio.addEventListener("timeupdate", () => {
     if (mode === "audio" && audio) {
       handlers?.onTime(audio.currentTime, audio.duration || 0);
+      try {
+        if ("mediaSession" in navigator && Number.isFinite(audio.duration) && audio.duration > 0) {
+          navigator.mediaSession.setPositionState({
+            duration: audio.duration,
+            playbackRate: audio.playbackRate || 1,
+            position: Math.min(audio.currentTime, audio.duration),
+          });
+        }
+      } catch {
+        /* ignore */
+      }
     }
   });
   audio.addEventListener("waiting", () => handlers?.onBuffer(true));
@@ -190,9 +215,75 @@ async function ensureYt(): Promise<YtPlayer> {
   return yt;
 }
 
+function bindMediaSession(track: Track) {
+  if (!("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist?.name || "GMAX",
+      album: track.album || "GMAX",
+      artwork: track.albumImageUrl
+        ? [
+            { src: track.albumImageUrl, sizes: "96x96", type: "image/jpeg" },
+            { src: track.albumImageUrl, sizes: "256x256", type: "image/jpeg" },
+            { src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" },
+          ]
+        : [],
+    });
+    navigator.mediaSession.playbackState = "playing";
+    navigator.mediaSession.setActionHandler("play", () => {
+      void engineResume();
+    });
+    navigator.mediaSession.setActionHandler("pause", () => {
+      enginePause();
+    });
+    navigator.mediaSession.setActionHandler("stop", () => {
+      engineStop();
+    });
+    navigator.mediaSession.setActionHandler("seekbackward", (d) => {
+      const off = d.seekOffset ?? 10;
+      if (mode === "audio" && audio) audio.currentTime = Math.max(0, audio.currentTime - off);
+    });
+    navigator.mediaSession.setActionHandler("seekforward", (d) => {
+      const off = d.seekOffset ?? 10;
+      if (mode === "audio" && audio)
+        audio.currentTime = Math.min(audio.duration || 1e9, audio.currentTime + off);
+    });
+    navigator.mediaSession.setActionHandler("seekto", (d) => {
+      if (d.seekTime != null) engineSeek(d.seekTime);
+    });
+    navigator.mediaSession.setActionHandler("nexttrack", () => navHandlers.next?.());
+    navigator.mediaSession.setActionHandler("previoustrack", () => navHandlers.prev?.());
+  } catch {
+    /* ignore */
+  }
+}
+
+export function setMediaSessionNav(next: () => void, prev: () => void) {
+  navHandlers = { next, prev };
+  if (!("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.setActionHandler("nexttrack", () => navHandlers.next?.());
+    navigator.mediaSession.setActionHandler("previoustrack", () => navHandlers.prev?.());
+  } catch {
+    /* ignore */
+  }
+}
+
+function keepAliveInBackground() {
+  if (typeof document === "undefined") return;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (mode === "audio" && audio && !audio.paused) {
+      void audio.play().catch(() => undefined);
+    }
+  });
+}
+
 export function initEngine(next: EngineHandlers) {
   handlers = next;
   ensureAudio();
+  keepAliveInBackground();
 }
 
 export async function enginePlay(track: Track) {
@@ -220,26 +311,7 @@ export async function enginePlay(track: Track) {
     el.volume = volume;
     try {
       await el.play();
-      if ("mediaSession" in navigator) {
-        try {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: track.title,
-            artist: track.artist?.name || "GMAX",
-            album: track.album || "GMAX",
-            artwork: track.albumImageUrl
-              ? [{ src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" }]
-              : [],
-          });
-          navigator.mediaSession.setActionHandler("play", () => {
-            void el.play();
-          });
-          navigator.mediaSession.setActionHandler("pause", () => {
-            el.pause();
-          });
-        } catch {
-          /* ignore */
-        }
-      }
+      bindMediaSession(track);
     } catch {
       handlers?.onError("Tap play to start audio.");
     }
@@ -258,20 +330,7 @@ export async function enginePlay(track: Track) {
       player.loadVideoById(videoId);
       player.playVideo();
       startYtPoll();
-      if ("mediaSession" in navigator) {
-        try {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: track.title,
-            artist: track.artist?.name || "GMAX",
-            album: track.album || "GMAX",
-            artwork: track.albumImageUrl
-              ? [{ src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" }]
-              : [],
-          });
-        } catch {
-          /* ignore */
-        }
-      }
+      bindMediaSession(track);
       return;
     } catch {
       /* fall through to preview */
@@ -291,6 +350,7 @@ export async function enginePlay(track: Track) {
     el.volume = volume;
     try {
       await el.play();
+      bindMediaSession(track);
     } catch {
       handlers?.onError("Tap play to start audio.");
     }
