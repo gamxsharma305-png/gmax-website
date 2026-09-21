@@ -73,12 +73,19 @@ function bindEngine() {
 }
 
 async function maybeResolve(track: Track): Promise<Track> {
-  if (track.videoId || !track.title) return track;
+  if (track.streamUrl || track.videoId || !track.title) return track;
   const token = ++resolveInflight;
   try {
-    const videoId = await resolveVideoId(track.title, track.artist?.name ?? "");
+    const resolved = await resolveVideoId(track.title, track.artist?.name ?? "");
     if (token !== resolveInflight) return track;
-    if (videoId) return { ...track, videoId };
+    if (resolved?.streamUrl) {
+      return {
+        ...track,
+        streamUrl: resolved.streamUrl,
+        duration: resolved.duration || track.duration,
+      };
+    }
+    if (resolved?.videoId) return { ...track, videoId: resolved.videoId };
   } catch {
     /* preview is enough */
   }
@@ -96,7 +103,7 @@ async function start(track: Track) {
   });
   const resolved = await maybeResolve(track);
   usePlayer.setState({ current: resolved });
-  if (!canPlay(resolved) && !resolved.videoId && !resolved.previewUrl) {
+  if (!canPlay(resolved) && !resolved.videoId && !resolved.streamUrl && !resolved.previewUrl) {
     usePlayer.setState({
       isLoading: false,
       error: "This track has no playable source.",
