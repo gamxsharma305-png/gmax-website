@@ -294,12 +294,21 @@ export function setMediaSessionNav(next: () => void, prev: () => void) {
 function keepAliveInBackground() {
   if (typeof document === "undefined") return;
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
-    if (mode === "audio" && audio && !audio.paused) {
-      void audio.play().catch(() => undefined);
+    if (document.hidden) {
+      // Direct audio (Saavn/Audius) can continue in background on Android.
+      // YouTube iframe is paused by the browser — cannot override.
+      return;
     }
-    if (!document.hidden && mode === "audio" && audio && !audio.paused) {
+    if (mode === "audio" && audio) {
+      void audio.play().catch(() => undefined);
       void requestWakeLock();
+    }
+    if (mode === "youtube" && yt) {
+      try {
+        yt.playVideo();
+      } catch {
+        /* ignore */
+      }
     }
   });
 }
