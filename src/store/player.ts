@@ -7,6 +7,7 @@ import {
   engineSeek,
   engineSetVolume,
   initEngine,
+  setMediaSessionNav,
 } from "@/lib/gmax/engine";
 import { canPlay } from "@/lib/gmax/normalize";
 import { resolveVideoId } from "@/lib/gmax/search";
@@ -70,6 +71,10 @@ function bindEngine() {
       usePlayer.setState({ error: message, isLoading: false, isPlaying: false }),
     onBuffer: (busy) => usePlayer.setState({ isLoading: busy }),
   });
+  setMediaSessionNav(
+    () => usePlayer.getState().next(),
+    () => usePlayer.getState().previous(),
+  );
 }
 
 async function maybeResolve(track: Track, force = false): Promise<Track> {
@@ -139,7 +144,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   position: 0,
   duration: 0,
   shuffle: false,
-  repeat: "off",
+  repeat: "all",
   volume: 1,
   error: null,
   contextLabel: "GMAX",
@@ -149,13 +154,15 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const queue = opts?.tracks?.length ? opts.tracks : [track];
     const index = Math.max(0, queue.findIndex((t) => t.id === track.id));
     const order = get().shuffle ? shuffleOrder(queue.length, index) : queue.map((_, i) => i);
+    const multi = queue.length > 1;
     set({
       queue,
       index,
       order,
       contextLabel: opts?.label || "GMAX",
+      ...(multi ? { repeat: get().repeat === "off" ? "all" : get().repeat } : {}),
     });
-    await start(track);
+    await start(track, true);
   },
 
   toggle: () => {
@@ -169,19 +176,18 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const { queue, index, order, shuffle, repeat, current } = get();
     if (!queue.length) return;
     if (repeat === "one" && current) {
-      void start(current);
+      void start(current, true);
       return;
     }
     const seq = shuffle ? order : queue.map((_, i) => i);
     const pos = seq.indexOf(index);
     const nextPos = pos + 1;
     if (nextPos >= seq.length) {
-      if (repeat === "all") {
-        const nextIndex = seq[0] ?? 0;
-        set({ index: nextIndex });
-        const t = queue[nextIndex];
-        if (t) void start(t);
-      } else {
+      const nextIndex = seq[0] ?? 0;
+      set({ index: nextIndex });
+      const t = queue[nextIndex];
+      if (t) void start(t, true);
+      else {
         enginePause();
         set({ isPlaying: false });
       }
@@ -190,7 +196,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const nextIndex = seq[nextPos] ?? index;
     set({ index: nextIndex });
     const t = queue[nextIndex];
-    if (t) void start(t);
+    if (t) void start(t, true);
   },
 
   previous: () => {
@@ -206,7 +212,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const prevIndex = seq[prevPos] ?? 0;
     set({ index: prevIndex });
     const t = queue[prevIndex];
-    if (t) void start(t);
+    if (t) void start(t, true);
   },
 
   seek: (seconds) => {
@@ -246,7 +252,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     if (index < 0) return;
     set({ index });
     const t = queue[index];
-    if (t) void start(t);
+    if (t) void start(t, true);
   },
 
   removeFromQueue: (trackId) => {
