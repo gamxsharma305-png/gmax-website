@@ -28,6 +28,10 @@ function walkRenderers(node: unknown, out: AnyRec[]) {
     out.push({ __video: rec.videoRenderer });
     return;
   }
+  if (rec.playlistVideoRenderer) {
+    out.push({ __video: rec.playlistVideoRenderer });
+    return;
+  }
   for (const v of Object.values(rec)) walkRenderers(v, out);
 }
 
@@ -119,7 +123,7 @@ function parseVideoRenderer(wrapper: AnyRec): Track | null {
   });
 }
 
-async function postJson(url: string, body: unknown, timeoutMs = 9000): Promise<unknown | null> {
+async function postJson(url: string, body: unknown, timeoutMs = 10000): Promise<unknown | null> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -128,7 +132,7 @@ async function postJson(url: string, body: unknown, timeoutMs = 9000): Promise<u
       headers: {
         "Content-Type": "application/json",
         "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         Origin: url.includes("music.youtube")
           ? "https://music.youtube.com"
           : "https://www.youtube.com",
@@ -155,47 +159,100 @@ function parseResponse(data: unknown): Track[] {
   const seen = new Set<string>();
   for (const item of items) {
     const track = item.__video ? parseVideoRenderer(item) : parseMusicItem(item);
-    if (!track || seen.has(track.id)) continue;
+    if (!track || !track.videoId || seen.has(track.id)) continue;
     seen.add(track.id);
     tracks.push(track);
   }
   return tracks;
 }
 
+/** International / viral genres that JioSaavn barely covers */
+export function isGlobalGenreQuery(query: string): boolean {
+  const q = query.toLowerCase();
+  return /\b(phonk|drift\s*phonk|montagem|montage[nm]?|funk|brazilian\s*funk|brega\s*funk|house|edm|techno|drill|trap\s*beat|lofi|lo-fi|synthwave|nightcore|sped\s*up|slowed)\b/i.test(
+    q,
+  );
+}
+
+function clientBodies(query: string, gl: string) {
+  return [
+    {
+      url: YT_MUSIC,
+      body: {
+        context: {
+          client: {
+            clientName: "WEB_REMIX",
+            clientVersion: "1.20260101.01.00",
+            hl: "en",
+            gl,
+          },
+        },
+        query,
+        params: SONGS_PARAMS,
+      },
+    },
+    {
+      url: YT_MUSIC,
+      body: {
+        context: {
+          client: {
+            clientName: "WEB_REMIX",
+            clientVersion: "1.20250317.01.00",
+            hl: "en",
+            gl,
+          },
+        },
+        query,
+        params: SONGS_PARAMS,
+      },
+    },
+    {
+      url: YT_WEB,
+      body: {
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20260101.01.00",
+            hl: "en",
+            gl,
+          },
+        },
+        query: `${query} official audio`,
+      },
+    },
+  ];
+}
+
 export async function searchYouTube(query: string, limit = 25): Promise<Track[]> {
   const q = query.trim();
   if (!q) return [];
 
-  const music = await postJson(YT_MUSIC, {
-    context: {
-      client: {
-        clientName: "WEB_REMIX",
-        clientVersion: "1.20250317.01.00",
-        hl: "en",
-        gl: "IN",
-      },
-    },
-    query: q,
-    params: SONGS_PARAMS,
-  });
-  if (music) {
-    const tracks = parseResponse(music).slice(0, limit);
-    if (tracks.length) return tracks;
+  const global = isGlobalGenreQuery(q);
+  const regions = global ? ["US", "BR", "IN"] : ["IN", "US"];
+  const queries = global ? [q, `${q} music`, `${q} official`] : [q];
+
+  const collected: Track[] = [];
+  const seen = new Set<string>();
+
+  for (const gl of regions) {
+    for (const searchQ of queries) {
+      for (const attempt of clientBodies(searchQ, gl)) {
+        const data = await postJson(attempt.url, attempt.body);
+        if (!data) continue;
+        for (const t of parseResponse(data)) {
+          if (seen.has(t.id)) continue;
+          seen.add(t.id);
+          collected.push(t);
+          if (collected.length >= limit) return collected.slice(0, limit);
+        }
+        if (collected.length >= Math.min(8, limit)) break;
+      }
+      if (collected.length >= Math.min(12, limit)) break;
+    }
+    if (collected.length >= Math.min(15, limit)) break;
   }
 
-  const web = await postJson(YT_WEB, {
-    context: {
-      client: {
-        clientName: "WEB",
-        clientVersion: "2.20250317.01.00",
-        hl: "en",
-        gl: "IN",
-      },
-    },
-    query: `${q} official audio`,
-  });
-  if (web) return parseResponse(web).slice(0, limit);
-  return [];
+  return collected.slice(0, limit);
 }
 
 export async function resolveYouTubeVideo(

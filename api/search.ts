@@ -1,5 +1,5 @@
 import { searchItunes } from "../src/lib/gmax/itunes";
-import { searchYouTube } from "../src/lib/gmax/youtube.server";
+import { searchYouTube, isGlobalGenreQuery } from "../src/lib/gmax/youtube.server";
 import { searchSaavn } from "../src/lib/gmax/saavn";
 import type { SearchResults, Track } from "../src/lib/gmax/types";
 import { emptySearchResults } from "../src/lib/gmax/types";
@@ -20,16 +20,15 @@ function titleKey(track: Track): string {
 }
 
 /**
- * Priority:
- * 1. Saavn tracks with full streamUrl (full song)
- * 2. YouTube tracks with videoId (full song via iframe)
- * 3. iTunes tracks (30s preview only)
+ * Default: Saavn full streams → YouTube → iTunes 30s
+ * Global genres (phonk / montagem / funk…): YouTube first
  */
 function mergeAll(
   saavn: Track[],
   youtube: Track[],
   itunes: Track[],
   limit: number,
+  youtubeFirst: boolean,
 ): Track[] {
   const seen = new Set<string>();
   const out: Track[] = [];
@@ -44,20 +43,26 @@ function mergeAll(
     return out.length >= limit;
   };
 
-  for (const t of saavn.filter((x) => x.streamUrl)) {
-    if (push(t)) return out;
-  }
-  for (const t of youtube.filter((x) => x.videoId)) {
-    if (push(t)) return out;
-  }
-  for (const t of saavn) {
-    if (push(t)) return out;
-  }
-  for (const t of youtube) {
-    if (push(t)) return out;
-  }
-  for (const t of itunes) {
-    if (push(t)) return out;
+  const buckets = youtubeFirst
+    ? [
+        youtube.filter((x) => x.videoId),
+        saavn.filter((x) => x.streamUrl),
+        youtube,
+        saavn,
+        itunes,
+      ]
+    : [
+        saavn.filter((x) => x.streamUrl),
+        youtube.filter((x) => x.videoId),
+        saavn,
+        youtube,
+        itunes,
+      ];
+
+  for (const bucket of buckets) {
+    for (const t of bucket) {
+      if (push(t)) return out;
+    }
   }
   return out;
 }
@@ -73,6 +78,8 @@ export default async function handler(req: Req, res: Res) {
   const limit = Math.min(50, Math.max(1, Number(req.body?.limit) || 25));
   if (!query) return res.status(200).json(emptySearchResults());
 
+  const youtubeFirst = isGlobalGenreQuery(query);
+
   const [saavn, yt, itunes] = await Promise.allSettled([
     searchSaavn(query, limit),
     searchYouTube(query, limit),
@@ -87,7 +94,7 @@ export default async function handler(req: Req, res: Res) {
 
   const payload: SearchResults = {
     query,
-    tracks: mergeAll(saavnTracks, ytTracks, itunesResults.tracks, limit),
+    tracks: mergeAll(saavnTracks, ytTracks, itunesResults.tracks, limit, youtubeFirst),
     artists: itunesResults.artists,
     albums: itunesResults.albums,
   };
@@ -95,6 +102,7 @@ export default async function handler(req: Req, res: Res) {
   res.setHeader("X-Gmax-Saavn-Count", String(saavnTracks.length));
   res.setHeader("X-Gmax-Yt-Count", String(ytTracks.length));
   res.setHeader("X-Gmax-Itunes-Count", String(itunesResults.tracks.length));
+  res.setHeader("X-Gmax-Yt-First", youtubeFirst ? "1" : "0");
 
   return res.status(200).json(payload);
 }
