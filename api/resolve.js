@@ -1,13 +1,10 @@
 const APP = "GMAXPlayer";
 
-async function fetchJson(url, timeoutMs = 12000) {
+async function fetchJson(url, options = {}, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { Accept: "application/json", "User-Agent": "GMAX/1.0" },
-    });
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -35,6 +32,20 @@ function pickStream(downloadUrl) {
     }
   }
   return best;
+}
+
+function walkVideoRenderers(node, out) {
+  if (!node) return;
+  if (Array.isArray(node)) {
+    for (const n of node) walkVideoRenderers(n, out);
+    return;
+  }
+  if (typeof node !== "object") return;
+  if (node.videoRenderer) {
+    out.push(node.videoRenderer);
+    return;
+  }
+  for (const v of Object.values(node)) walkVideoRenderers(v, out);
 }
 
 async function resolveSaavn(title, artist) {
@@ -70,6 +81,41 @@ async function resolveAudius(title, artist) {
   return null;
 }
 
+async function resolveYouTube(title, artist) {
+  const q = [artist, title, "official audio"].filter(Boolean).join(" ").trim();
+  const UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const data = await fetchJson(
+    "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": UA,
+        Origin: "https://www.youtube.com",
+        Referer: "https://www.youtube.com/",
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20250317.01.00",
+            hl: "en",
+            gl: "US",
+          },
+        },
+        query: q,
+      }),
+    },
+  );
+  if (!data) return null;
+  const renderers = [];
+  walkVideoRenderers(data, renderers);
+  const videoId = renderers[0]?.videoId;
+  if (!videoId) return null;
+  return { videoId, streamUrl: null, duration: null };
+}
+
 function parseBody(req) {
   if (req.body && typeof req.body === "object") return req.body;
   if (typeof req.body === "string") {
@@ -100,6 +146,9 @@ export default async function handler(req, res) {
 
     const audius = await resolveAudius(title, artist).catch(() => null);
     if (audius?.streamUrl) return res.status(200).json(audius);
+
+    const yt = await resolveYouTube(title, artist).catch(() => null);
+    if (yt?.videoId) return res.status(200).json(yt);
 
     return res.status(200).json({ videoId: null, streamUrl: null });
   } catch {

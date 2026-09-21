@@ -1,13 +1,10 @@
 const APP = "GMAXPlayer";
 
-async function fetchJson(url, timeoutMs = 12000) {
+async function fetchJson(url, options = {}, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { Accept: "application/json", "User-Agent": "GMAX/1.0" },
-    });
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -52,6 +49,33 @@ function pickImage(images) {
   return "";
 }
 
+function runsText(node) {
+  if (!node) return "";
+  if (typeof node === "string") return node;
+  if (node.simpleText) return node.simpleText;
+  if (Array.isArray(node.runs)) return node.runs.map((r) => r.text || "").join("");
+  if (node.text?.runs) return node.text.runs.map((r) => r.text || "").join("");
+  return "";
+}
+
+function walkVideoRenderers(node, out) {
+  if (!node) return;
+  if (Array.isArray(node)) {
+    for (const n of node) walkVideoRenderers(n, out);
+    return;
+  }
+  if (typeof node !== "object") return;
+  if (node.videoRenderer) {
+    out.push(node.videoRenderer);
+    return;
+  }
+  if (node.playlistVideoRenderer) {
+    out.push(node.playlistVideoRenderer);
+    return;
+  }
+  for (const v of Object.values(node)) walkVideoRenderers(v, out);
+}
+
 function mapSaavn(item) {
   if (!item || !item.id) return null;
   const title = item.name || item.title;
@@ -90,6 +114,31 @@ function mapAudius(item) {
     provider: "audius",
     sourceId: String(item.id),
     streamUrl: `https://discoveryprovider.audius.co/v1/tracks/${encodeURIComponent(item.id)}/stream?app_name=${APP}`,
+  };
+}
+
+function mapYoutube(video) {
+  const videoId = video?.videoId;
+  if (!videoId) return null;
+  const title = runsText(video.title);
+  if (!title) return null;
+  const artist =
+    runsText(video.ownerText) ||
+    runsText(video.shortBylineText) ||
+    runsText(video.longBylineText) ||
+    "YouTube";
+  const thumbs = video.thumbnail?.thumbnails || [];
+  const thumb = thumbs.length ? thumbs[thumbs.length - 1].url : "";
+  return {
+    id: `youtube:${videoId}`,
+    title,
+    artist: { id: `artist:${artist}`, name: artist },
+    albumImageUrl: thumb.startsWith("//") ? `https:${thumb}` : thumb,
+    duration: 0,
+    provider: "youtube",
+    sourceId: videoId,
+    videoId,
+    isVideo: true,
   };
 }
 
@@ -154,8 +203,59 @@ async function searchItunes(query, limit) {
     }));
 }
 
+async function searchYouTube(query, limit) {
+  const UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const queries = [query, `${query} official audio`, `${query} song`];
+  const regions = ["US", "IN"];
+  const out = [];
+  const seen = new Set();
+
+  for (const gl of regions) {
+    for (const q of queries) {
+      const data = await fetchJson(
+        "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": UA,
+            Origin: "https://www.youtube.com",
+            Referer: "https://www.youtube.com/",
+          },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: "WEB",
+                clientVersion: "2.20250317.01.00",
+                hl: "en",
+                gl,
+              },
+            },
+            query: q,
+          }),
+        },
+        14000,
+      );
+      if (!data) continue;
+      const renderers = [];
+      walkVideoRenderers(data, renderers);
+      for (const video of renderers) {
+        const t = mapYoutube(video);
+        if (!t || seen.has(t.id)) continue;
+        seen.add(t.id);
+        out.push(t);
+        if (out.length >= limit) return out;
+      }
+      if (out.length >= Math.min(10, limit)) break;
+    }
+    if (out.length >= Math.min(12, limit)) break;
+  }
+  return out;
+}
+
 function isGlobal(q) {
-  return /\b(phonk|drift\s*phonk|montagem|montage[nm]?|funk|brazilian\s*funk|house|edm|techno|drill|lofi|lo-fi|synthwave|nightcore)\b/i.test(
+  return /\b(phonk|drift\s*phonk|montagem|montage[nm]?|funk|brazilian\s*funk|house|edm|techno|drill|lofi|lo-fi|lofi\s*hip\s*hop|synthwave|nightcore|sped\s*up|slowed)\b/i.test(
     q,
   );
 }
@@ -205,7 +305,8 @@ export default async function handler(req, res) {
     }
 
     const global = isGlobal(query);
-    const [audius, saavn, itunes] = await Promise.all([
+    const [youtube, audius, saavn, itunes] = await Promise.all([
+      searchYouTube(query, limit).catch(() => []),
       searchAudius(query, limit).catch(() => []),
       searchSaavn(query, limit).catch(() => []),
       searchItunes(query, limit).catch(() => []),
@@ -213,23 +314,31 @@ export default async function handler(req, res) {
 
     const buckets = global
       ? [
+          youtube.filter((t) => t.videoId),
           audius.filter((t) => t.streamUrl),
           saavn.filter((t) => t.streamUrl),
+          youtube,
           audius,
           saavn,
           itunes,
         ]
       : [
           saavn.filter((t) => t.streamUrl),
+          youtube.filter((t) => t.videoId),
           audius.filter((t) => t.streamUrl),
           saavn,
+          youtube,
           audius,
           itunes,
         ];
 
+    const tracks = merge(buckets, limit);
+    res.setHeader("X-Gmax-Yt", String(youtube.length));
+    res.setHeader("X-Gmax-Audius", String(audius.length));
+    res.setHeader("X-Gmax-Saavn", String(saavn.length));
     return res.status(200).json({
       query,
-      tracks: merge(buckets, limit),
+      tracks,
       artists: [],
       albums: [],
     });
