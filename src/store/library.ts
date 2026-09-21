@@ -58,6 +58,7 @@ function cleanTrack(raw: unknown): Track | null {
     album: t.album,
     videoId: t.videoId,
     previewUrl: t.previewUrl,
+    streamUrl: t.streamUrl,
     explicit: t.explicit,
     isVideo: t.isVideo,
   });
