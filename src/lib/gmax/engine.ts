@@ -41,6 +41,8 @@ function ensureAudio() {
   if (audio) return audio;
   audio = new Audio();
   audio.preload = "auto";
+  audio.setAttribute("playsinline", "true");
+  audio.setAttribute("webkit-playsinline", "true");
   audio.addEventListener("play", () => handlers?.onPlay());
   audio.addEventListener("pause", () => {
     if (mode === "audio") handlers?.onPause();
@@ -194,13 +196,55 @@ export function initEngine(next: EngineHandlers) {
 }
 
 export async function enginePlay(track: Track) {
-  if (!canPlay(track) && !safeText(track.videoId) && !safeUrl(track.previewUrl)) {
+  const videoId = safeText(track.videoId);
+  const stream = safeUrl(track.streamUrl);
+  const preview = safeUrl(track.previewUrl);
+
+  if (!videoId && !stream && !preview) {
     handlers?.onError("This track has no playable source.");
     return;
   }
   handlers?.onBuffer(true);
-  const videoId = safeText(track.videoId);
-  const preview = safeUrl(track.previewUrl);
+
+  if (stream) {
+    mode = "audio";
+    stopPoll();
+    try {
+      yt?.pauseVideo();
+    } catch {
+      /* ignore */
+    }
+    const el = ensureAudio();
+    el.crossOrigin = "anonymous";
+    el.src = stream;
+    el.volume = volume;
+    try {
+      await el.play();
+      if ("mediaSession" in navigator) {
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: track.title,
+            artist: track.artist?.name || "GMAX",
+            album: track.album || "GMAX",
+            artwork: track.albumImageUrl
+              ? [{ src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" }]
+              : [],
+          });
+          navigator.mediaSession.setActionHandler("play", () => {
+            void el.play();
+          });
+          navigator.mediaSession.setActionHandler("pause", () => {
+            el.pause();
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      handlers?.onError("Tap play to start audio.");
+    }
+    return;
+  }
 
   if (videoId && !ytFailed) {
     try {
@@ -214,6 +258,20 @@ export async function enginePlay(track: Track) {
       player.loadVideoById(videoId);
       player.playVideo();
       startYtPoll();
+      if ("mediaSession" in navigator) {
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: track.title,
+            artist: track.artist?.name || "GMAX",
+            album: track.album || "GMAX",
+            artwork: track.albumImageUrl
+              ? [{ src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" }]
+              : [],
+          });
+        } catch {
+          /* ignore */
+        }
+      }
       return;
     } catch {
       /* fall through to preview */
