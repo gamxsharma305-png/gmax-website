@@ -44,6 +44,12 @@ function mergeAll(
     return out.length >= limit;
   };
 
+  for (const t of saavn.filter((x) => x.streamUrl)) {
+    if (push(t)) return out;
+  }
+  for (const t of youtube.filter((x) => x.videoId)) {
+    if (push(t)) return out;
+  }
   for (const t of saavn) {
     if (push(t)) return out;
   }
