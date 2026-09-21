@@ -1,4 +1,4 @@
-export type ProviderId = "youtube" | "itunes" | "saavn";
+export type ProviderId = "youtube" | "itunes" | "saavn" | "audius";
 
 export type Artist = {
   id: string;
@@ -17,11 +17,8 @@ export type Track = {
   album?: string;
   explicit?: boolean;
   isVideo?: boolean;
-  /** YouTube video id — plays full length via the official iframe player. */
   videoId?: string;
-  /** iTunes 30s preview — last-resort fallback. */
   previewUrl?: string;
-  /** Full-length direct audio stream (e.g. JioSaavn). Preferred over preview. */
   streamUrl?: string;
 };
 
