@@ -44,6 +44,8 @@ type PlayerState = {
 
 let engineBound = false;
 let resolveInflight = 0;
+let consecutiveErrors = 0;
+let advancing = false;
 
 function shuffleOrder(length: number, pin?: number): number[] {
   const rest = Array.from({ length }, (_, i) => i).filter((i) => i !== pin);
@@ -60,15 +62,28 @@ function bindEngine() {
   if (engineBound || typeof window === "undefined") return;
   engineBound = true;
   initEngine({
-    onPlay: () => usePlayer.setState({ isPlaying: true, isLoading: false, error: null }),
+    onPlay: () => {
+      consecutiveErrors = 0;
+      usePlayer.setState({ isPlaying: true, isLoading: false, error: null });
+    },
     onPause: () => usePlayer.setState({ isPlaying: false }),
-    onEnded: () => usePlayer.getState().next(),
+    onEnded: () => {
+      consecutiveErrors = 0;
+      usePlayer.getState().next();
+    },
     onTime: (position, duration) => {
       const d = Number.isFinite(duration) && duration > 0 ? duration : usePlayer.getState().duration;
       usePlayer.setState({ position, duration: d });
     },
-    onError: (message) =>
-      usePlayer.setState({ error: message, isLoading: false, isPlaying: false }),
+    onError: (message) => {
+      consecutiveErrors += 1;
+      usePlayer.setState({ error: message, isLoading: false, isPlaying: false });
+      if (consecutiveErrors <= 8 && usePlayer.getState().queue.length > 1) {
+        window.setTimeout(() => {
+          usePlayer.getState().next();
+        }, 400);
+      }
+    },
     onBuffer: (busy) => usePlayer.setState({ isLoading: busy }),
   });
   setMediaSessionNav(
@@ -128,11 +143,44 @@ async function start(track: Track, forceResolve = false) {
       isLoading: false,
       error: "This track has no playable source.",
     });
+    const q = usePlayer.getState().queue;
+    if (q.length > 1 && consecutiveErrors < 8) {
+      consecutiveErrors += 1;
+      window.setTimeout(() => usePlayer.getState().next(), 300);
+    }
     return;
   }
 
   await enginePlay(resolved);
+  consecutiveErrors = 0;
   useLibrary.getState().recordPlay(resolved);
+
+  void prefetchNeighbor();
+}
+
+async function prefetchNeighbor() {
+  const { queue, index, order, shuffle } = usePlayer.getState();
+  if (queue.length < 2) return;
+  const seq = shuffle ? order : queue.map((_, i) => i);
+  const pos = seq.indexOf(index);
+  if (pos < 0) return;
+  const nextIndex = seq[(pos + 1) % seq.length];
+  if (nextIndex == null) return;
+  const t = queue[nextIndex];
+  if (!t || t.streamUrl || t.videoId) return;
+  try {
+    const resolved = await maybeResolve(t, true);
+    if (resolved.streamUrl || resolved.videoId) {
+      const q = usePlayer.getState().queue.slice();
+      const i = q.findIndex((x) => x.id === t.id);
+      if (i >= 0) {
+        q[i] = resolved;
+        usePlayer.setState({ queue: q });
+      }
+    }
+  } catch {
+    /* ignore prefetch errors */
+  }
 }
 
 export const usePlayer = create<PlayerState>((set, get) => ({
@@ -155,6 +203,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const index = Math.max(0, queue.findIndex((t) => t.id === track.id));
     const order = get().shuffle ? shuffleOrder(queue.length, index) : queue.map((_, i) => i);
     const multi = queue.length > 1;
+    consecutiveErrors = 0;
+    advancing = false;
     set({
       queue,
       index,
@@ -173,30 +223,37 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   },
 
   next: () => {
+    if (advancing) return;
     const { queue, index, order, shuffle, repeat, current } = get();
     if (!queue.length) return;
-    if (repeat === "one" && current) {
-      void start(current, true);
-      return;
-    }
-    const seq = shuffle ? order : queue.map((_, i) => i);
-    const pos = seq.indexOf(index);
-    const nextPos = pos + 1;
-    if (nextPos >= seq.length) {
-      const nextIndex = seq[0] ?? 0;
-      set({ index: nextIndex });
+    advancing = true;
+    const done = () => {
+      advancing = false;
+    };
+    try {
+      if (repeat === "one" && current) {
+        void start(current, true).finally(done);
+        return;
+      }
+      const seq = shuffle ? order : queue.map((_, i) => i);
+      let pos = seq.indexOf(index);
+      if (pos < 0) pos = 0;
+      const nextPos = pos + 1;
+      const nextIndex =
+        nextPos >= seq.length ? (seq[0] ?? 0) : (seq[nextPos] ?? index);
+      set({ index: nextIndex, error: null });
       const t = queue[nextIndex];
-      if (t) void start(t, true);
-      else {
+      if (t) {
+        const force = !t.streamUrl && !t.videoId && !t.previewUrl;
+        void start(t, force).finally(done);
+      } else {
         enginePause();
         set({ isPlaying: false });
+        done();
       }
-      return;
+    } catch {
+      done();
     }
-    const nextIndex = seq[nextPos] ?? index;
-    set({ index: nextIndex });
-    const t = queue[nextIndex];
-    if (t) void start(t, true);
   },
 
   previous: () => {
@@ -272,6 +329,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   retry: () => {
     const current = get().current;
     if (current) {
+      consecutiveErrors = 0;
       const fresh = { ...current, streamUrl: undefined };
       void start(fresh, true);
     }
