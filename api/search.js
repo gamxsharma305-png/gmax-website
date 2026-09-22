@@ -304,29 +304,36 @@ export default async function handler(req, res) {
       return res.status(200).json({ query: "", tracks: [], artists: [], albums: [] });
     }
 
-    // TEMP: YouTube off — Saavn + Audius only
     const global = isGlobal(query);
-    const [audius, saavn] = await Promise.all([
+    const [youtube, audius, saavn, itunes] = await Promise.all([
+      searchYouTube(query, limit).catch(() => []),
       searchAudius(query, limit).catch(() => []),
       searchSaavn(query, limit).catch(() => []),
+      searchItunes(query, limit).catch(() => []),
     ]);
 
     const buckets = global
       ? [
+          youtube.filter((t) => t.videoId),
           audius.filter((t) => t.streamUrl),
           saavn.filter((t) => t.streamUrl),
+          youtube,
           audius,
           saavn,
+          itunes,
         ]
       : [
           saavn.filter((t) => t.streamUrl),
+          youtube.filter((t) => t.videoId),
           audius.filter((t) => t.streamUrl),
           saavn,
+          youtube,
           audius,
+          itunes,
         ];
 
     const tracks = merge(buckets, limit);
-    res.setHeader("X-Gmax-Yt", "0");
+    res.setHeader("X-Gmax-Yt", String(youtube.length));
     res.setHeader("X-Gmax-Audius", String(audius.length));
     res.setHeader("X-Gmax-Saavn", String(saavn.length));
     return res.status(200).json({
