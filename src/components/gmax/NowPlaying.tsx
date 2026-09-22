@@ -13,9 +13,11 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  PictureInPicture2,
   X,
 } from "lucide-react";
 import { formatTime } from "@/lib/gmax/text";
+import { engineEnterPictureInPicture } from "@/lib/gmax/engine";
 import { trackArtist, trackTitle } from "@/lib/gmax/normalize";
 import { useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
@@ -138,11 +140,25 @@ export function NowPlaying() {
           </button>
         ) : null}
 
-        <div className="mb-3 flex items-center justify-center gap-10">
+        <div className="mb-3 flex items-center justify-center gap-8">
           <button type="button" onClick={() => seekBy(-10)} className="flex items-center gap-1 text-muted">
             <RotateCcw size={20} />
             <span className="text-xs font-medium">10</span>
           </button>
+          {current.provider === "youtube" || current.videoId ? (
+            <button
+              type="button"
+              onClick={() => {
+                void engineEnterPictureInPicture();
+              }}
+              className="flex flex-col items-center gap-0.5 text-muted"
+              aria-label="Picture in picture"
+              title="Picture-in-Picture"
+            >
+              <PictureInPicture2 size={22} />
+              <span className="text-[10px] font-medium">PiP</span>
+            </button>
+          ) : null}
           <button type="button" onClick={() => seekBy(10)} className="flex items-center gap-1 text-muted">
             <RotateCw size={20} />
             <span className="text-xs font-medium">10</span>
