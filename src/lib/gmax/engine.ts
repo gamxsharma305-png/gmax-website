@@ -21,6 +21,7 @@ type YtPlayer = {
   getPlayerState: () => number;
   setVolume: (v: number) => void;
   destroy: () => void;
+  getIframe?: () => HTMLIFrameElement;
 };
 
 let audio: HTMLAudioElement | null = null;
@@ -180,6 +181,50 @@ function loadYoutubeApi(): Promise<void> {
   });
 }
 
+function enableYtPictureInPicture(player: YtPlayer) {
+  try {
+    const iframe = player.getIframe?.() || document.querySelector("#gmax-yt-host iframe");
+    if (!iframe || !(iframe instanceof HTMLIFrameElement)) return;
+    iframe.setAttribute(
+      "allow",
+      "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
+    );
+    iframe.setAttribute("allowfullscreen", "true");
+    (iframe as HTMLIFrameElement & { allowPictureInPicture?: boolean }).allowPictureInPicture = true;
+  } catch {
+    /* ignore */
+  }
+}
+
+/** User-gesture Picture-in-Picture for the YouTube embed (best-effort). */
+export async function engineEnterPictureInPicture(): Promise<boolean> {
+  if (mode !== "youtube" || !yt) return false;
+  try {
+    enableYtPictureInPicture(yt);
+    const iframe = yt.getIframe?.() || document.querySelector("#gmax-yt-host iframe");
+    if (!iframe || !(iframe instanceof HTMLIFrameElement)) return false;
+
+    const anyIframe = iframe as HTMLIFrameElement & {
+      requestPictureInPicture?: () => Promise<PictureInPictureWindow>;
+    };
+    if (typeof anyIframe.requestPictureInPicture === "function") {
+      await anyIframe.requestPictureInPicture();
+      return true;
+    }
+
+    const videos = document.querySelectorAll("video");
+    for (const v of videos) {
+      if (typeof v.requestPictureInPicture === "function") {
+        await v.requestPictureInPicture();
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 async function ensureYt(): Promise<YtPlayer> {
   await loadYoutubeApi();
   if (yt) return yt;
@@ -189,7 +234,7 @@ async function ensureYt(): Promise<YtPlayer> {
     host.id = "gmax-yt-host";
     host.setAttribute("aria-hidden", "true");
     host.style.cssText =
-      "position:fixed;width:320px;height:180px;left:-9999px;top:0;opacity:0;pointer-events:none;z-index:-1;";
+      "position:fixed;width:160px;height:90px;right:8px;bottom:88px;opacity:0.02;pointer-events:none;z-index:40;overflow:hidden;border-radius:8px;";
     document.body.appendChild(host);
   }
   const w = window as unknown as {
@@ -198,8 +243,8 @@ async function ensureYt(): Promise<YtPlayer> {
   yt = await new Promise<YtPlayer>((resolve, reject) => {
     try {
       const player = new w.YT.Player(host!, {
-        width: 320,
-        height: 180,
+        width: 160,
+        height: 90,
         playerVars: {
           autoplay: 1,
           controls: 0,
@@ -212,7 +257,10 @@ async function ensureYt(): Promise<YtPlayer> {
           origin: window.location.origin,
         },
         events: {
-          onReady: () => resolve(player),
+          onReady: () => {
+            enableYtPictureInPicture(player);
+            resolve(player);
+          },
           onError: (e: { data?: number }) => {
             const code = e?.data;
             const msg =
@@ -379,6 +427,7 @@ export async function enginePlay(track: Track) {
       player.setVolume(Math.round(volume * 100));
       player.loadVideoById(videoId);
       player.playVideo();
+      enableYtPictureInPicture(player);
       startYtPoll();
       bindMediaSession(track);
       void requestWakeLock();
