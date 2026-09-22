@@ -149,7 +149,10 @@ export function NowPlaying() {
             <button
               type="button"
               onClick={() => {
-                void engineEnterPictureInPicture();
+                void (async () => {
+                  await engineEnterPictureInPicture();
+                  close();
+                })();
               }}
               className="flex flex-col items-center gap-0.5 text-muted"
               aria-label="Picture in picture"
