@@ -103,7 +103,7 @@ export function SettingsView() {
   const setPref = <K extends keyof typeof DEFAULT_PREFS>(key: K, value: (typeof DEFAULT_PREFS)[K]) => {
     saveProfile({ prefs: { ...prefs, [key]: value } });
   };
-  const setView = useUi((s) => s.setView);
+  const closeOverlay = useUi((s) => s.closeOverlay);
   const [panel, setPanel] = useState<"main" | "accent" | "theme" | "lang" | "quality">("main");
   const [name, setName] = useState(profile?.name ?? "");
   const [gender, setGender] = useState<Gender>(profile?.gender ?? "unspecified");
@@ -113,11 +113,11 @@ export function SettingsView() {
   };
 
   return (
-    <div className="flex h-full flex-col bg-bg text-fg">
-      <header className="flex items-center gap-2 border-b border-hairline px-3 py-3">
+    <div className="absolute inset-0 z-40 flex flex-col bg-bg text-fg">
+      <header className="flex items-center gap-2 border-b border-hairline px-3 py-3 pt-[calc(12px+env(safe-area-inset-top))]">
         <button
           type="button"
-          onClick={() => (panel === "main" ? setView("home") : setPanel("main"))}
+          onClick={() => (panel === "main" ? closeOverlay() : setPanel("main"))}
           className="grid size-9 place-items-center rounded-full bg-lift text-fg"
           aria-label="Back"
         >
