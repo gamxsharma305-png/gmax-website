@@ -50,10 +50,34 @@ export type RepeatMode = "off" | "all" | "one";
 
 export type Gender = "male" | "female" | "unspecified";
 
+export type ThemeMode = "dark" | "light" | "system";
+export type AudioQuality = "auto" | "high" | "medium";
+
+export type UserPrefs = {
+  themeMode: ThemeMode;
+  accent: string;
+  language: string;
+  audioQuality: AudioQuality;
+  showQualityBadge: boolean;
+  gapless: boolean;
+  crossfade: boolean;
+};
+
 export type UserProfile = {
   name: string;
   gender: Gender;
   completed: boolean;
+  prefs?: UserPrefs;
+};
+
+export const DEFAULT_PREFS: UserPrefs = {
+  themeMode: "dark",
+  accent: "#1db954",
+  language: "en",
+  audioQuality: "high",
+  showQualityBadge: false,
+  gapless: true,
+  crossfade: false,
 };
 
 export type HistoryEntry = {
