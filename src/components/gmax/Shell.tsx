@@ -7,6 +7,7 @@ import { SearchView } from "./SearchView";
 import { HistoryView } from "./HistoryView";
 import { LibraryView } from "./LibraryView";
 import { MiniPlayer } from "./MiniPlayer";
+import { FloatBall } from "./FloatBall";
 import { NowPlaying } from "./NowPlaying";
 import { SettingsView } from "./SettingsView";
 import { PlaylistView } from "./PlaylistView";
@@ -22,6 +23,7 @@ const TABS: { id: TabId; label: string; Icon: typeof HomeIcon }[] = [
 export function Shell() {
   const tab = useUi((s) => s.tab);
   const overlay = useUi((s) => s.overlay);
+  const floatBall = useUi((s) => s.floatBall);
   const setTab = useUi((s) => s.setTab);
   const hasTrack = usePlayer((s) => Boolean(s.current));
 
@@ -34,7 +36,8 @@ export function Shell() {
         {tab === "library" ? <LibraryView /> : null}
       </div>
 
-      {hasTrack ? <MiniPlayer /> : null}
+      {hasTrack && !floatBall ? <MiniPlayer /> : null}
+      {hasTrack && floatBall ? <FloatBall /> : null}
 
       <nav className="absolute inset-x-0 bottom-0 z-20 border-t border-hairline bg-raised pb-[env(safe-area-inset-bottom)]">
         <div className="grid h-[68px] grid-cols-4">
