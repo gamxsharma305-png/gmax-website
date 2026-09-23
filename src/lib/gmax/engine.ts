@@ -21,6 +21,7 @@ type YtPlayer = {
   getPlayerState: () => number;
   setVolume: (v: number) => void;
   destroy: () => void;
+  getIframe?: () => HTMLIFrameElement;
 };
 
 let audio: HTMLAudioElement | null = null;
@@ -368,4 +369,49 @@ export function engineStop() {
   void releaseWakeLock();
   audio?.pause();
   try { yt?.pauseVideo(); } catch { /* */ }
+}
+
+/** Best-effort Document / video PiP for YouTube (no-op if unsupported). */
+export async function engineEnterPictureInPicture(): Promise<boolean> {
+  if (typeof window === "undefined" || mode !== "youtube") return false;
+  try {
+    const host = document.getElementById("gmax-yt-host");
+    const iframe = host?.querySelector("iframe") as HTMLIFrameElement | null;
+    if (iframe) {
+      iframe.setAttribute(
+        "allow",
+        "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
+      );
+      iframe.setAttribute("allowfullscreen", "true");
+    }
+    const dpip = (window as unknown as {
+      documentPictureInPicture?: {
+        requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
+      };
+    }).documentPictureInPicture;
+    if (dpip?.requestWindow && host) {
+      const win = await dpip.requestWindow({ width: 360, height: 220 });
+      const doc = win.document;
+      doc.body.style.cssText = "margin:0;background:#000;width:100%;height:100%";
+      host.style.cssText = "width:100%;height:100%";
+      doc.body.appendChild(host);
+      try { yt?.playVideo(); } catch { /* */ }
+      win.addEventListener("pagehide", () => {
+        document.body.appendChild(host);
+        host.style.cssText =
+          "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px;bottom:0";
+        try { yt?.playVideo(); } catch { /* */ }
+      });
+      return true;
+    }
+    for (const v of document.querySelectorAll("video")) {
+      if (typeof v.requestPictureInPicture === "function" && document.pictureInPictureEnabled) {
+        await v.requestPictureInPicture();
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
