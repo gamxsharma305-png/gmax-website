@@ -35,6 +35,9 @@ let volume = 1;
 let navHandlers: { next?: () => void; prev?: () => void } = {};
 let wakeLock: WakeLockSentinel | null = null;
 let pipWindow: Window | null = null;
+let wantPlay = false;
+let bgKickTimer: number | null = null;
+let ytEndedSent = false;
 
 const YT_PLAYING = 1;
 const YT_PAUSED = 2;
@@ -84,7 +87,10 @@ function ensureAudio() {
     }
   });
   audio.addEventListener("ended", () => {
-    if (mode === "audio") handlers?.onEnded();
+    if (mode === "audio") {
+      wantPlay = true;
+      handlers?.onEnded();
+    }
   });
   audio.addEventListener("timeupdate", () => {
     if (mode === "audio" && audio) {
@@ -120,19 +126,26 @@ function stopPoll() {
 
 function startYtPoll() {
   stopPoll();
+  ytEndedSent = false;
   poll = window.setInterval(() => {
     if (mode !== "youtube" || !yt) return;
     try {
-      handlers?.onTime(yt.getCurrentTime() || 0, yt.getDuration() || 0);
+      const t = yt.getCurrentTime() || 0;
+      const d = yt.getDuration() || 0;
+      handlers?.onTime(t, d);
       const state = yt.getPlayerState();
-      if (state === YT_ENDED) {
+      const nearEnd = d > 3 && t >= d - 0.75;
+      if ((state === YT_ENDED || nearEnd) && !ytEndedSent) {
+        ytEndedSent = true;
         stopPoll();
+        wantPlay = true;
         handlers?.onEnded();
       } else if (state === YT_BUFFERING) {
         handlers?.onBuffer(true);
       } else if (state === YT_PLAYING) {
         handlers?.onBuffer(false);
         handlers?.onPlay();
+        ytEndedSent = false;
       }
     } catch {
       /* player tearing down */
@@ -223,7 +236,6 @@ export async function engineEnterPictureInPicture(): Promise<boolean> {
 
   try {
     if (yt) enableYtPictureInPicture(yt);
-
     const host = document.getElementById("gmax-yt-host");
     if (!host) return false;
 
@@ -239,10 +251,8 @@ export async function engineEnterPictureInPicture(): Promise<boolean> {
       } catch {
         /* ignore */
       }
-
       const win = await dpip.requestWindow({ width: 360, height: 220 });
       pipWindow = win;
-
       const doc = win.document;
       doc.head.innerHTML = "";
       const style = doc.createElement("style");
@@ -253,13 +263,11 @@ export async function engineEnterPictureInPicture(): Promise<boolean> {
       doc.body.innerHTML = "";
       styleYtHostForPip(host, true);
       doc.body.appendChild(host);
-
       try {
         yt?.playVideo();
       } catch {
         /* ignore */
       }
-
       win.addEventListener("pagehide", () => {
         returnYtHostToApp();
         try {
@@ -268,7 +276,6 @@ export async function engineEnterPictureInPicture(): Promise<boolean> {
           /* ignore */
         }
       });
-
       return true;
     }
 
@@ -340,7 +347,12 @@ async function ensureYt(): Promise<YtPlayer> {
             } else if (e.data === YT_PAUSED) {
               handlers?.onPause();
             } else if (e.data === YT_ENDED) {
-              handlers?.onEnded();
+              if (!ytEndedSent) {
+                ytEndedSent = true;
+                wantPlay = true;
+                stopPoll();
+                handlers?.onEnded();
+              }
             } else if (e.data === YT_BUFFERING) {
               handlers?.onBuffer(true);
             }
@@ -411,10 +423,6 @@ export function setMediaSessionNav(next: () => void, prev: () => void) {
   }
 }
 
-/** User still wants playback (not intentional pause). */
-let wantPlay = false;
-let bgKickTimer: number | null = null;
-
 function kickPlayback() {
   if (!wantPlay) return;
   if (mode === "youtube" && yt) {
@@ -434,7 +442,6 @@ function keepAliveInBackground() {
 
   const onHide = () => {
     if (!wantPlay) return;
-    // Same pattern as common YT iframe "background hold" snippets
     kickPlayback();
     if (bgKickTimer != null) window.clearInterval(bgKickTimer);
     bgKickTimer = window.setInterval(() => {
@@ -507,8 +514,25 @@ export async function enginePlay(track: Track) {
       wantPlay = true;
       bindMediaSession(track);
       void requestWakeLock();
+      if (typeof document !== "undefined" && document.hidden) {
+        [200, 600, 1500].forEach((ms) => {
+          window.setTimeout(() => {
+            if (wantPlay && mode === "audio" && audio) {
+              void audio.play().catch(() => undefined);
+            }
+          }, ms);
+        });
+      }
     } catch {
-      handlers?.onError("Couldn't play this track.");
+      wantPlay = true;
+      [300, 900, 2000].forEach((ms) => {
+        window.setTimeout(() => {
+          if (wantPlay && mode === "audio" && audio) {
+            void audio.play().catch(() => undefined);
+          }
+        }, ms);
+      });
+      handlers?.onPlay();
     }
     return;
   }
@@ -529,6 +553,19 @@ export async function enginePlay(track: Track) {
       startYtPoll();
       bindMediaSession(track);
       void requestWakeLock();
+      if (typeof document !== "undefined" && document.hidden) {
+        [300, 800, 1600, 3000].forEach((ms) => {
+          window.setTimeout(() => {
+            if (wantPlay && mode === "youtube") {
+              try {
+                yt?.playVideo();
+              } catch {
+                /* ignore */
+              }
+            }
+          }, ms);
+        });
+      }
       return;
     } catch {
       /* fall through to preview */
