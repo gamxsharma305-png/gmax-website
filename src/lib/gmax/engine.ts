@@ -411,24 +411,60 @@ export function setMediaSessionNav(next: () => void, prev: () => void) {
   }
 }
 
+/** User still wants playback (not intentional pause). */
+let wantPlay = false;
+let bgKickTimer: number | null = null;
+
+function kickPlayback() {
+  if (!wantPlay) return;
+  if (mode === "youtube" && yt) {
+    try {
+      yt.playVideo();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (mode === "audio" && audio) {
+    void audio.play().catch(() => undefined);
+  }
+}
+
 function keepAliveInBackground() {
   if (typeof document === "undefined") return;
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      return;
-    }
-    if (mode === "audio" && audio) {
-      void audio.play().catch(() => undefined);
-      void requestWakeLock();
-    }
-    if (mode === "youtube" && yt) {
-      try {
-        yt.playVideo();
-      } catch {
-        /* ignore */
+
+  const onHide = () => {
+    if (!wantPlay) return;
+    // Same pattern as common YT iframe "background hold" snippets
+    kickPlayback();
+    if (bgKickTimer != null) window.clearInterval(bgKickTimer);
+    bgKickTimer = window.setInterval(() => {
+      if (!wantPlay || !document.hidden) {
+        if (bgKickTimer != null) {
+          window.clearInterval(bgKickTimer);
+          bgKickTimer = null;
+        }
+        return;
       }
+      kickPlayback();
+    }, 1500);
+  };
+
+  const onShow = () => {
+    if (bgKickTimer != null) {
+      window.clearInterval(bgKickTimer);
+      bgKickTimer = null;
     }
+    if (!wantPlay) return;
+    kickPlayback();
+    void requestWakeLock();
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) onHide();
+    else onShow();
   });
+  window.addEventListener("pageshow", onShow);
+  window.addEventListener("focus", onShow);
 }
 
 export function initEngine(next: EngineHandlers) {
@@ -468,6 +504,7 @@ export async function enginePlay(track: Track) {
     el.volume = volume;
     try {
       await el.play();
+      wantPlay = true;
       bindMediaSession(track);
       void requestWakeLock();
     } catch {
@@ -487,6 +524,7 @@ export async function enginePlay(track: Track) {
       player.setVolume(Math.round(volume * 100));
       player.loadVideoById(videoId);
       player.playVideo();
+      wantPlay = true;
       enableYtPictureInPicture(player);
       startYtPoll();
       bindMediaSession(track);
@@ -510,6 +548,7 @@ export async function enginePlay(track: Track) {
     el.volume = volume;
     try {
       await el.play();
+      wantPlay = true;
       bindMediaSession(track);
     } catch {
       handlers?.onError("Couldn't play this track.");
@@ -522,6 +561,7 @@ export async function enginePlay(track: Track) {
 }
 
 export function enginePause() {
+  wantPlay = false;
   void releaseWakeLock();
   if (mode === "youtube") {
     try {
@@ -535,6 +575,7 @@ export function enginePause() {
 }
 
 export async function engineResume() {
+  wantPlay = true;
   if (mode === "youtube") {
     try {
       yt?.playVideo();
@@ -574,6 +615,7 @@ export function engineSetVolume(v: number) {
 }
 
 export function engineStop() {
+  wantPlay = false;
   stopPoll();
   void releaseWakeLock();
   audio?.pause();
