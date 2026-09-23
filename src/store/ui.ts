@@ -9,12 +9,16 @@ type UiState = {
   overlay: Overlay;
   playlistId: string | null;
   addingTrack: Track | null;
+  /** Floating ball mini-player (in-app PiP look) */
+  floatBall: boolean;
   setTab: (tab: TabId) => void;
   openNowPlaying: () => void;
   openSettings: () => void;
   openPlaylist: (id: string) => void;
   closeOverlay: () => void;
   setAddingTrack: (track: Track | null) => void;
+  enterFloatBall: () => void;
+  exitFloatBall: () => void;
 };
 
 export const useUi = create<UiState>((set) => ({
@@ -22,10 +26,13 @@ export const useUi = create<UiState>((set) => ({
   overlay: "none",
   playlistId: null,
   addingTrack: null,
+  floatBall: false,
   setTab: (tab) => set({ tab, overlay: "none" }),
-  openNowPlaying: () => set({ overlay: "nowplaying" }),
-  openSettings: () => set({ overlay: "settings" }),
-  openPlaylist: (id) => set({ overlay: "playlist", playlistId: id }),
+  openNowPlaying: () => set({ overlay: "nowplaying", floatBall: false }),
+  openSettings: () => set({ overlay: "settings", floatBall: false }),
+  openPlaylist: (id) => set({ overlay: "playlist", playlistId: id, floatBall: false }),
   closeOverlay: () => set({ overlay: "none", playlistId: null }),
   setAddingTrack: (track) => set({ addingTrack: track }),
+  enterFloatBall: () => set({ floatBall: true, overlay: "none", playlistId: null }),
+  exitFloatBall: () => set({ floatBall: false }),
 }));
