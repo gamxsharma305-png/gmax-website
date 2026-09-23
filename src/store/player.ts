@@ -69,7 +69,9 @@ function bindEngine() {
     onPause: () => usePlayer.setState({ isPlaying: false }),
     onEnded: () => {
       consecutiveErrors = 0;
-      usePlayer.getState().next();
+      window.setTimeout(() => {
+        usePlayer.getState().next();
+      }, 150);
     },
     onTime: (position, duration) => {
       const d = Number.isFinite(duration) && duration > 0 ? duration : usePlayer.getState().duration;
@@ -96,7 +98,6 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
   if (!force && track.streamUrl) return track;
   if (!track.title) return track;
 
-  // YouTube search hits already have videoId — play via iframe, don't swap song
   if (track.provider === "youtube" && track.videoId && !force) {
     return track;
   }
@@ -235,6 +236,9 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const { queue, index, order, shuffle, repeat, current } = get();
     if (!queue.length) return;
     advancing = true;
+    window.setTimeout(() => {
+      advancing = false;
+    }, 12000);
     const done = () => {
       advancing = false;
     };
@@ -247,12 +251,18 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       let pos = seq.indexOf(index);
       if (pos < 0) pos = 0;
       const nextPos = pos + 1;
+      if (nextPos >= seq.length && repeat === "off") {
+        enginePause();
+        set({ isPlaying: false });
+        done();
+        return;
+      }
       const nextIndex =
         nextPos >= seq.length ? (seq[0] ?? 0) : (seq[nextPos] ?? index);
-      set({ index: nextIndex, error: null });
+      set({ index: nextIndex, error: null, isPlaying: true });
       const t = queue[nextIndex];
       if (t) {
-        void start(t, !t.streamUrl).finally(done);
+        void start(t, !t.streamUrl && !t.videoId).finally(done);
       } else {
         enginePause();
         set({ isPlaying: false });
