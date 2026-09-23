@@ -47,6 +47,7 @@ export function NowPlaying() {
   const removeFromQueue = usePlayer((s) => s.removeFromQueue);
   const retry = usePlayer((s) => s.retry);
   const close = useUi((s) => s.closeOverlay);
+  const enterFloatBall = useUi((s) => s.enterFloatBall);
   const setAddingTrack = useUi((s) => s.setAddingTrack);
   const liked = useLibrary((s) => (current ? s.liked.some((t) => t.id === current.id) : false));
   const toggleLike = useLibrary((s) => s.toggleLike);
@@ -145,23 +146,23 @@ export function NowPlaying() {
             <RotateCcw size={20} />
             <span className="text-xs font-medium">10</span>
           </button>
-          {current.provider === "youtube" || current.videoId ? (
-            <button
-              type="button"
-              onClick={() => {
-                void (async () => {
-                  await engineEnterPictureInPicture();
-                  close();
-                })();
-              }}
-              className="flex flex-col items-center gap-0.5 text-muted"
-              aria-label="Picture in picture"
-              title="Picture-in-Picture"
-            >
-              <PictureInPicture2 size={22} />
-              <span className="text-[10px] font-medium">PiP</span>
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              // In-app floating ball (works on all sources)
+              enterFloatBall();
+              // Best-effort system / Document PiP for YouTube
+              if (current.videoId || current.provider === "youtube") {
+                void engineEnterPictureInPicture();
+              }
+            }}
+            className="flex flex-col items-center gap-0.5 text-muted"
+            aria-label="Picture in picture"
+            title="Mini float player"
+          >
+            <PictureInPicture2 size={22} />
+            <span className="text-[10px] font-medium">PiP</span>
+          </button>
           <button type="button" onClick={() => seekBy(10)} className="flex items-center gap-1 text-muted">
             <RotateCw size={20} />
             <span className="text-xs font-medium">10</span>
