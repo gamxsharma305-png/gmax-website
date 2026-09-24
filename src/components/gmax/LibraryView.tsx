@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
+import { AUTO_PLAYLISTS } from "@/lib/gmax/catalog";
+import { searchAll } from "@/lib/gmax/search";
 import { likedPlaylist, useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
 import { useUi } from "@/store/ui";
@@ -20,6 +22,8 @@ export function LibraryView() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("Playlists");
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
+  const [autoLoading, setAutoLoading] = useState<string | null>(null);
+  const [autoError, setAutoError] = useState<string | null>(null);
 
   const allPlaylists = useMemo(() => {
     const sorted = [...playlists].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -51,6 +55,33 @@ export function LibraryView() {
       albums: [...albums.values()].sort((x, y) => y.count - x.count),
     };
   }, [liked, playlists, recents]);
+
+  async function playAutoMix(id: string, query: string, label: string, save: boolean) {
+    setAutoError(null);
+    setAutoLoading(id);
+    try {
+      const res = await searchAll(query);
+      const tracks = res.tracks;
+      if (!tracks.length) {
+        setAutoError("No songs found for this mix. Try again.");
+        return;
+      }
+      if (save) {
+        const existing = playlists.find((p) => p.name === label);
+        if (existing) {
+          openPlaylist(existing.id);
+        } else {
+          const p = createPlaylist(label, tracks);
+          openPlaylist(p.id);
+        }
+      }
+      if (tracks[0]) void playTrack(tracks[0], { tracks, label });
+    } catch {
+      setAutoError("Could not load mix. Check network.");
+    } finally {
+      setAutoLoading(null);
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -115,8 +146,37 @@ export function LibraryView() {
       </div>
 
       <div className="gmax-scroll px-4">
-        {filter === "Playlists"
-          ? allPlaylists.map((p) => (
+        {filter === "Playlists" ? (
+          <>
+            <p className="mb-2 mt-1 text-[10px] font-medium tracking-[0.22em] text-faint">AUTO MIXES</p>
+            <p className="mb-3 text-[12px] text-muted">
+              Tap to play · long-press / hold Save to keep in library
+            </p>
+            <div className="mb-5 grid grid-cols-2 gap-2">
+              {AUTO_PLAYLISTS.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  disabled={autoLoading === m.id}
+                  className="rounded-md border border-line bg-glass px-3 py-3 text-left disabled:opacity-50"
+                  style={{ borderLeftWidth: 3, borderLeftColor: m.color }}
+                  onClick={() => void playAutoMix(m.id, m.query, m.name, false)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    void playAutoMix(m.id, m.query, m.name, true);
+                  }}
+                >
+                  <span className="block text-[14px] font-medium">{m.name}</span>
+                  <span className="text-[11px] text-muted">
+                    {autoLoading === m.id ? "Loading…" : m.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {autoError ? <p className="mb-3 text-sm text-red-400">{autoError}</p> : null}
+
+            <p className="mb-2 text-[10px] font-medium tracking-[0.22em] text-faint">YOUR PLAYLISTS</p>
+            {allPlaylists.map((p) => (
               <div key={p.id} className="flex items-center">
                 <button
                   type="button"
@@ -151,8 +211,9 @@ export function LibraryView() {
                   </button>
                 ) : null}
               </div>
-            ))
-          : null}
+            ))}
+          </>
+        ) : null}
 
         {filter === "Artists" ? (
           derived.artists.length ? (
