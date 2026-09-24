@@ -1,4 +1,4 @@
-import { ChevronLeft, Play, Shuffle } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronUp, Play, Shuffle } from "lucide-react";
 import { likedPlaylist, useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
 import { useUi } from "@/store/ui";
@@ -10,6 +10,7 @@ export function PlaylistView() {
   const close = useUi((s) => s.closeOverlay);
   const setAddingTrack = useUi((s) => s.setAddingTrack);
   const playlists = useLibrary((s) => s.playlists);
+  const movePlaylistTrack = useLibrary((s) => s.movePlaylistTrack);
   const playTrack = usePlayer((s) => s.playTrack);
   const currentId = usePlayer((s) => s.current?.id);
   const isPlaying = usePlayer((s) => s.isPlaying);
@@ -29,6 +30,7 @@ export function PlaylistView() {
   }
 
   const tracks = playlist.tracks;
+  const canReorder = playlist.id !== "liked";
 
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-bg">
@@ -46,6 +48,7 @@ export function PlaylistView() {
             <p className="mt-1 font-display text-2xl font-semibold leading-tight">{playlist.name}</p>
             <p className="mt-1 text-xs text-muted">
               {playlist.creator} • {tracks.length} songs
+              {canReorder ? " · drag with ↑↓" : ""}
             </p>
           </div>
         </div>
@@ -76,14 +79,39 @@ export function PlaylistView() {
           </button>
         </div>
         {tracks.length ? (
-          tracks.map((track) => (
-            <TrackRow
-              key={track.id}
-              track={track}
-              onPress={(t) => void playTrack(t, { tracks, label: playlist.name })}
-              onMore={setAddingTrack}
-              isPlaying={currentId === track.id && isPlaying}
-            />
+          tracks.map((track, index) => (
+            <div key={track.id} className="flex items-center gap-1 border-b border-line/40">
+              {canReorder ? (
+                <div className="flex flex-col">
+                  <button
+                    type="button"
+                    disabled={index === 0}
+                    className="grid size-8 place-items-center text-muted disabled:opacity-20"
+                    aria-label="Move up"
+                    onClick={() => movePlaylistTrack(playlist.id, track.id, -1)}
+                  >
+                    <ChevronUp size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={index === tracks.length - 1}
+                    className="grid size-8 place-items-center text-muted disabled:opacity-20"
+                    aria-label="Move down"
+                    onClick={() => movePlaylistTrack(playlist.id, track.id, 1)}
+                  >
+                    <ChevronDown size={16} />
+                  </button>
+                </div>
+              ) : null}
+              <div className="min-w-0 flex-1">
+                <TrackRow
+                  track={track}
+                  onPress={(t) => void playTrack(t, { tracks, label: playlist.name })}
+                  onMore={setAddingTrack}
+                  isPlaying={currentId === track.id && isPlaying}
+                />
+              </div>
+            </div>
           ))
         ) : (
           <div className="rounded-md border border-line bg-glass p-4 text-sm text-muted">
