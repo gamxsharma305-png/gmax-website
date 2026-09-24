@@ -72,15 +72,16 @@ function startPlayWatchdog() {
         playing = yt.getPlayerState() === YT_PLAYING;
       } catch { return; }
     }
-    if (!playing || (pos > 0.5 && Math.abs(pos - lastWatchPos) < 0.2)) {
+    if (!playing || (pos > 0.5 && Math.abs(pos - lastWatchPos) < 0.15)) {
       stallTicks += 1;
-      if (stallTicks >= 3) {
+      if (stallTicks >= 2) {
         stallTicks = 0;
         void engineResume();
+        if (mode === "audio") scheduleNetRetry();
       }
     } else stallTicks = 0;
     lastWatchPos = pos;
-  }, 2000);
+  }, 1500);
 }
 
 function stopPlayWatchdog() {
@@ -88,22 +89,63 @@ function stopPlayWatchdog() {
   stallTicks = 0;
 }
 
+let netRetryTimer: number | null = null;
+let netRetries = 0;
+
+function scheduleNetRetry() {
+  if (!wantPlay || mode !== "audio" || !audio) return;
+  if (netRetryTimer != null) return;
+  netRetryTimer = window.setTimeout(() => {
+    netRetryTimer = null;
+    if (!wantPlay || !audio) return;
+    netRetries += 1;
+    if (netRetries > 6) {
+      handlers?.onError("Network weak — tap play to retry.");
+      return;
+    }
+    const t = audio.currentTime || 0;
+    const src = audio.src;
+    try {
+      if (src) {
+        void audio.play().catch(() => {
+          try {
+            audio!.src = src;
+            audio!.load();
+            audio!.currentTime = Math.max(0, t - 0.5);
+            void audio!.play();
+          } catch { /* ignore */ }
+        });
+      }
+    } catch { /* ignore */ }
+  }, 600 + netRetries * 400);
+}
+
 function ensureAudio() {
   if (audio) return audio;
   audio = new Audio();
   audio.preload = "auto";
   audio.crossOrigin = "anonymous";
-  audio.setAttribute("playsinline", "true");
-  audio.setAttribute("webkit-playsinline", "true");
+  try { audio.setAttribute("playsinline", "true"); } catch { /* */ }
+  try { audio.setAttribute("webkit-playsinline", "true"); } catch { /* */ }
+  try { (audio as HTMLAudioElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = false; } catch { /* */ }
+
   audio.addEventListener("play", () => {
+    netRetries = 0;
     handlers?.onPlay();
+    void requestWakeLock();
     try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; } catch { /* */ }
   });
   audio.addEventListener("pause", () => {
+    if (mode === "audio" && wantPlay) {
+      scheduleNetRetry();
+      return;
+    }
     if (mode === "audio") handlers?.onPause();
     try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; } catch { /* */ }
   });
-  audio.addEventListener("ended", () => { if (mode === "audio") handlers?.onEnded(); });
+  audio.addEventListener("ended", () => {
+    if (mode === "audio") handlers?.onEnded();
+  });
   audio.addEventListener("timeupdate", () => {
     if (mode === "audio" && audio) {
       handlers?.onTime(audio.currentTime, audio.duration || 0);
@@ -111,16 +153,35 @@ function ensureAudio() {
         if ("mediaSession" in navigator && Number.isFinite(audio.duration) && audio.duration > 0) {
           navigator.mediaSession.setPositionState({
             duration: audio.duration,
-            position: audio.currentTime,
+            position: Math.min(audio.currentTime, audio.duration),
             playbackRate: audio.playbackRate || 1,
           });
         }
       } catch { /* */ }
     }
   });
-  audio.addEventListener("waiting", () => handlers?.onBuffer(true));
-  audio.addEventListener("playing", () => handlers?.onBuffer(false));
-  audio.addEventListener("error", () => handlers?.onError("Couldn't play this track."));
+  audio.addEventListener("waiting", () => {
+    handlers?.onBuffer(true);
+    if (wantPlay) scheduleNetRetry();
+  });
+  audio.addEventListener("stalled", () => {
+    handlers?.onBuffer(true);
+    if (wantPlay) scheduleNetRetry();
+  });
+  audio.addEventListener("suspend", () => {
+    if (wantPlay && audio && audio.paused) scheduleNetRetry();
+  });
+  audio.addEventListener("playing", () => {
+    netRetries = 0;
+    handlers?.onBuffer(false);
+  });
+  audio.addEventListener("error", () => {
+    if (wantPlay) {
+      scheduleNetRetry();
+      return;
+    }
+    handlers?.onError("Couldn't play this track.");
+  });
   return audio;
 }
 
@@ -194,13 +255,40 @@ export function setMediaSessionNav(next: () => void, prev: () => void) {
 
 function keepAliveInBackground() {
   if (typeof document === "undefined") return;
+
+  const kick = () => {
+    if (!wantPlay) return;
+    startPlayWatchdog();
+    void requestWakeLock();
+    void engineResume();
+  };
+
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
-    if (wantPlay) {
-      startPlayWatchdog();
-      void engineResume();
-    }
+    kick();
   });
+  window.addEventListener("pageshow", kick);
+  window.addEventListener("focus", kick);
+  window.addEventListener("online", () => {
+    netRetries = 0;
+    kick();
+  });
+  document.addEventListener("freeze", () => {
+    /* wantPlay stays true */
+  });
+  document.addEventListener("resume", kick);
+  window.setInterval(() => {
+    if (!wantPlay) return;
+    if (mode === "audio" && audio) {
+      if (audio.paused || audio.readyState < 2) {
+        void audio.play().catch(() => scheduleNetRetry());
+      }
+    } else if (mode === "youtube" && yt) {
+      try {
+        const st = yt.getPlayerState();
+        if (st === YT_PAUSED || st === YT_BUFFERING) yt.playVideo();
+      } catch { /* ignore */ }
+    }
+  }, 4000);
 }
 
 let inited = false;
@@ -283,6 +371,7 @@ async function getYtPlayer(): Promise<YtPlayer> {
 
 export async function enginePlay(track: Track) {
   wantPlay = true;
+  netRetries = 0;
   startPlayWatchdog();
   stopPoll();
   handlers?.onBuffer(true);
@@ -336,15 +425,16 @@ export function enginePause() {
 export async function engineResume() {
   wantPlay = true;
   startPlayWatchdog();
+  void requestWakeLock();
   if (mode === "youtube") {
     try { yt?.playVideo(); } catch { /* */ }
     return;
   }
+  if (!audio) return;
   try {
-    await audio?.play();
-    void requestWakeLock();
+    await audio.play();
   } catch {
-    handlers?.onError("Tap play to resume.");
+    scheduleNetRetry();
   }
 }
 
