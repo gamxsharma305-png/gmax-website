@@ -85,6 +85,8 @@ type LibraryState = {
   renamePlaylist: (id: string, name: string) => void;
   addToPlaylist: (playlistId: string, track: Track) => void;
   removeFromPlaylist: (playlistId: string, trackId: string) => void;
+  /** Move a track up (-1) or down (+1) inside a user playlist. */
+  movePlaylistTrack: (playlistId: string, trackId: string, direction: -1 | 1) => void;
   touchPlaylist: (id: string) => void;
 };
 
@@ -254,6 +256,23 @@ export const useLibrary = create<LibraryState>((set, get) => ({
         ? { ...p, tracks: p.tracks.filter((t) => t.id !== trackId), updatedAt: Date.now() }
         : p,
     );
+    write(KEYS.playlists, playlists);
+    set({ playlists });
+  },
+
+  movePlaylistTrack: (playlistId, trackId, direction) => {
+    const playlists = get().playlists.map((p) => {
+      if (p.id !== playlistId) return p;
+      const tracks = [...p.tracks];
+      const i = tracks.findIndex((t) => t.id === trackId);
+      if (i < 0) return p;
+      const j = i + direction;
+      if (j < 0 || j >= tracks.length) return p;
+      const tmp = tracks[i]!;
+      tracks[i] = tracks[j]!;
+      tracks[j] = tmp;
+      return { ...p, tracks, updatedAt: Date.now() };
+    });
     write(KEYS.playlists, playlists);
     set({ playlists });
   },
