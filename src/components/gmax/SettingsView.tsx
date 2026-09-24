@@ -10,12 +10,14 @@ import {
   BadgeCheck,
   ListMusic,
   Waves,
+  Gamepad2,
 } from "lucide-react";
 import { APP_NAME, APP_VERSION } from "@/lib/gmax/catalog";
 import type { AudioQuality, Gender, ThemeMode } from "@/lib/gmax/types";
 import { DEFAULT_PREFS } from "@/lib/gmax/types";
 import { useLibrary } from "@/store/library";
 import { useUi } from "@/store/ui";
+import { MazeGame } from "./MazeGame";
 
 const GENDERS: { value: Gender; label: string }[] = [
   { value: "male", label: "Male" },
@@ -104,13 +106,17 @@ export function SettingsView() {
     saveProfile({ prefs: { ...prefs, [key]: value } });
   };
   const closeOverlay = useUi((s) => s.closeOverlay);
-  const [panel, setPanel] = useState<"main" | "accent" | "theme" | "lang" | "quality">("main");
+  const [panel, setPanel] = useState<"main" | "accent" | "theme" | "lang" | "quality" | "game">("main");
   const [name, setName] = useState(profile?.name ?? "");
   const [gender, setGender] = useState<Gender>(profile?.gender ?? "unspecified");
 
   const commitProfile = () => {
     saveProfile({ name: name.trim() || "Listener", gender });
   };
+
+  if (panel === "game") {
+    return <MazeGame onBack={() => setPanel("main")} />;
+  }
 
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-bg text-fg">
@@ -140,9 +146,7 @@ export function SettingsView() {
         {panel === "main" ? (
           <>
             <section className="mb-6">
-              <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                Profile
-              </h2>
+              <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted">Profile</h2>
               <div className="overflow-hidden rounded-2xl bg-raised">
                 <div className="flex items-center gap-3 border-b border-hairline px-3 py-3">
                   <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-lift text-muted">
@@ -178,59 +182,47 @@ export function SettingsView() {
 
             <section className="mb-6">
               <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted">
-                Preferences
+                Play while listening
               </h2>
               <div className="overflow-hidden rounded-2xl bg-raised">
                 <Row
-                  icon={Palette}
-                  title="Accent color"
-                  subtitle={prefs.accent}
-                  onClick={() => setPanel("accent")}
+                  icon={Gamepad2}
+                  title="Arrow Maze"
+                  subtitle="20 levels · music keeps playing"
+                  onClick={() => setPanel("game")}
                 />
-                <Row
-                  icon={SunMoon}
-                  title="Theme mode"
-                  subtitle={prefs.themeMode}
-                  onClick={() => setPanel("theme")}
-                />
+              </div>
+            </section>
+
+            <section className="mb-6">
+              <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted">Preferences</h2>
+              <div className="overflow-hidden rounded-2xl bg-raised">
+                <Row icon={Palette} title="Accent color" subtitle={prefs.accent} onClick={() => setPanel("accent")} />
+                <Row icon={SunMoon} title="Theme mode" subtitle={prefs.themeMode} onClick={() => setPanel("theme")} />
                 <Row
                   icon={Languages}
                   title="Language"
                   subtitle={prefs.language === "hi" ? "हिन्दी" : "English"}
                   onClick={() => setPanel("lang")}
                 />
-                <Row
-                  icon={Music2}
-                  title="Audio quality"
-                  subtitle={prefs.audioQuality}
-                  onClick={() => setPanel("quality")}
-                />
+                <Row icon={Music2} title="Audio quality" subtitle={prefs.audioQuality} onClick={() => setPanel("quality")} />
                 <Row icon={SlidersHorizontal} title="Equalizer" subtitle="System EQ (device)" />
                 <Row
                   icon={BadgeCheck}
                   title="Show audio quality badge"
-                  trailing={
-                    <Toggle
-                      on={prefs.showQualityBadge}
-                      onChange={(v) => setPref("showQualityBadge", v)}
-                    />
-                  }
+                  trailing={<Toggle on={prefs.showQualityBadge} onChange={(v) => setPref("showQualityBadge", v)} />}
                 />
                 <Row
                   icon={Waves}
                   title="Gapless playback"
                   subtitle="Seamless track transitions"
-                  trailing={
-                    <Toggle on={prefs.gapless} onChange={(v) => setPref("gapless", v)} />
-                  }
+                  trailing={<Toggle on={prefs.gapless} onChange={(v) => setPref("gapless", v)} />}
                 />
                 <Row
                   icon={ListMusic}
                   title="Crossfade"
                   subtitle="Experimental"
-                  trailing={
-                    <Toggle on={prefs.crossfade} onChange={(v) => setPref("crossfade", v)} />
-                  }
+                  trailing={<Toggle on={prefs.crossfade} onChange={(v) => setPref("crossfade", v)} />}
                 />
               </div>
             </section>
@@ -272,9 +264,7 @@ export function SettingsView() {
                   setPanel("main");
                 }}
                 className={`rounded-md border px-4 py-3 text-left text-sm font-medium ${
-                  prefs.themeMode === t.value
-                    ? "border-fg bg-fg text-bg"
-                    : "border-line bg-raised text-fg"
+                  prefs.themeMode === t.value ? "border-fg bg-fg text-bg" : "border-line bg-raised text-fg"
                 }`}
               >
                 {t.label}
@@ -295,9 +285,7 @@ export function SettingsView() {
                   setPanel("main");
                 }}
                 className={`rounded-md border px-4 py-3 text-left text-sm font-medium ${
-                  prefs.language === l.value
-                    ? "border-fg bg-fg text-bg"
-                    : "border-line bg-raised text-fg"
+                  prefs.language === l.value ? "border-fg bg-fg text-bg" : "border-line bg-raised text-fg"
                 }`}
               >
                 {l.label}
@@ -317,9 +305,7 @@ export function SettingsView() {
                   setPanel("main");
                 }}
                 className={`rounded-md border px-4 py-3 text-left text-sm font-medium ${
-                  prefs.audioQuality === q.value
-                    ? "border-fg bg-fg text-bg"
-                    : "border-line bg-raised text-fg"
+                  prefs.audioQuality === q.value ? "border-fg bg-fg text-bg" : "border-line bg-raised text-fg"
                 }`}
               >
                 {q.label}
