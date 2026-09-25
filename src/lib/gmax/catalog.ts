@@ -45,18 +45,27 @@ export const ACTION_QUERIES: Record<string, string[]> = {
     "new music this month",
     "most played songs today",
   ],
+  // Chill → Dean × Luffy style: Indian / Hindi soft + Luffy vibes. Fresh mix every tap.
   chill: [
-    "chill relaxing songs",
-    "lofi chill beats",
-    "acoustic chill playlist",
-    "calm indie chill",
-    "sunset chill mix",
+    "Dean Luffy hindi songs",
+    "Dean and Luffy indian chill",
+    "Luffy hindi soft songs",
+    "Dean Luffy bollywood chill",
+    "indian lofi Luffy Dean",
+    "hindi chill Dean Luffy mix",
+    "Dean Luffy romantic hindi",
+    "soft indian songs Luffy style",
   ],
+  // Focus → Punjabi heat: Sidhu Moose Wala, Shubh, top Punjabi. Instant play on tap.
   focus: [
-    "focus instrumental concentration",
-    "deep focus study music",
-    "ambient focus no lyrics",
-    "piano focus instrumental",
+    "Sidhu Moose Wala hits",
+    "Sidhu Moose Wala best songs",
+    "Shubh punjabi songs",
+    "Shubh hits punjabi",
+    "punjabi hits Sidhu Moose Wala",
+    "top punjabi songs Sidhu Shubh",
+    "Sidhu Moosewala latest",
+    "punjabi focus workout Sidhu",
   ],
 };
 

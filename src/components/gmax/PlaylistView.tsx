@@ -1,4 +1,5 @@
-import { ChevronDown, ChevronLeft, ChevronUp, Play, Shuffle } from "lucide-react";
+import { useRef, useState } from "react";
+import { ChevronLeft, GripVertical, Play, Shuffle } from "lucide-react";
 import { likedPlaylist, useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
 import { useUi } from "@/store/ui";
@@ -14,6 +15,10 @@ export function PlaylistView() {
   const playTrack = usePlayer((s) => s.playTrack);
   const currentId = usePlayer((s) => s.current?.id);
   const isPlaying = usePlayer((s) => s.isPlaying);
+
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  const dragFrom = useRef<number>(-1);
 
   const playlist =
     playlistId === "liked" ? likedPlaylist() : playlists.find((p) => p.id === playlistId);
@@ -32,6 +37,61 @@ export function PlaylistView() {
   const tracks = playlist.tracks;
   const canReorder = playlist.id !== "liked";
 
+  function onDragStart(e: React.DragEvent, index: number, id: string) {
+    if (!canReorder) return;
+    dragFrom.current = index;
+    setDragId(id);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id);
+    requestAnimationFrame(() => {
+      (e.target as HTMLElement).closest("[data-track-row]")?.classList.add("opacity-40");
+    });
+  }
+
+  function onDragOver(e: React.DragEvent, id: string) {
+    if (!canReorder || !dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (id !== overId) setOverId(id);
+  }
+
+  function onDragLeave() {
+    setOverId(null);
+  }
+
+  function onDrop(e: React.DragEvent, toIndex: number) {
+    e.preventDefault();
+    if (!canReorder || dragFrom.current < 0) return;
+    const from = dragFrom.current;
+    if (from === toIndex) {
+      cleanupDrag();
+      return;
+    }
+    const dir = from < toIndex ? 1 : -1;
+    let i = from;
+    const trackId = tracks[from]?.id;
+    if (!trackId) {
+      cleanupDrag();
+      return;
+    }
+    while (i !== toIndex) {
+      movePlaylistTrack(playlist!.id, trackId, dir as -1 | 1);
+      i += dir;
+    }
+    cleanupDrag();
+  }
+
+  function onDragEnd(e: React.DragEvent) {
+    (e.target as HTMLElement).closest("[data-track-row]")?.classList.remove("opacity-40");
+    cleanupDrag();
+  }
+
+  function cleanupDrag() {
+    dragFrom.current = -1;
+    setDragId(null);
+    setOverId(null);
+  }
+
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-bg">
       <div className="flex items-center gap-1 px-2 pb-2 pt-[calc(12px+env(safe-area-inset-top))]">
@@ -48,7 +108,7 @@ export function PlaylistView() {
             <p className="mt-1 font-display text-2xl font-semibold leading-tight">{playlist.name}</p>
             <p className="mt-1 text-xs text-muted">
               {playlist.creator} • {tracks.length} songs
-              {canReorder ? " · drag with ↑↓" : ""}
+              {canReorder ? " · drag to reorder" : ""}
             </p>
           </div>
         </div>
@@ -79,40 +139,45 @@ export function PlaylistView() {
           </button>
         </div>
         {tracks.length ? (
-          tracks.map((track, index) => (
-            <div key={track.id} className="flex items-center gap-1 border-b border-line/40">
-              {canReorder ? (
-                <div className="flex flex-col">
-                  <button
-                    type="button"
-                    disabled={index === 0}
-                    className="grid size-8 place-items-center text-muted disabled:opacity-20"
-                    aria-label="Move up"
-                    onClick={() => movePlaylistTrack(playlist.id, track.id, -1)}
-                  >
-                    <ChevronUp size={16} />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={index === tracks.length - 1}
-                    className="grid size-8 place-items-center text-muted disabled:opacity-20"
-                    aria-label="Move down"
-                    onClick={() => movePlaylistTrack(playlist.id, track.id, 1)}
-                  >
-                    <ChevronDown size={16} />
-                  </button>
+          <div className="flex flex-col gap-0.5">
+            {tracks.map((track, index) => {
+              const isOver = overId === track.id && dragId !== track.id;
+              return (
+                <div
+                  key={track.id}
+                  data-track-row
+                  draggable={canReorder}
+                  onDragStart={(e) => onDragStart(e, index, track.id)}
+                  onDragOver={(e) => onDragOver(e, track.id)}
+                  onDragLeave={onDragLeave}
+                  onDrop={(e) => onDrop(e, index)}
+                  onDragEnd={onDragEnd}
+                  className={`flex items-center gap-1 rounded-md border-b border-line/40 transition-all duration-200 ease-out ${
+                    isOver ? "translate-y-0.5 border-accent/50 bg-accent/10" : ""
+                  } ${dragId === track.id ? "opacity-40 scale-[0.98]" : ""}`}
+                >
+                  {canReorder ? (
+                    <button
+                      type="button"
+                      className="grid size-10 shrink-0 cursor-grab place-items-center text-muted active:cursor-grabbing"
+                      aria-label="Drag to reorder"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <GripVertical size={18} />
+                    </button>
+                  ) : null}
+                  <div className="min-w-0 flex-1">
+                    <TrackRow
+                      track={track}
+                      onPress={(t) => void playTrack(t, { tracks, label: playlist.name })}
+                      onMore={setAddingTrack}
+                      isPlaying={currentId === track.id && isPlaying}
+                    />
+                  </div>
                 </div>
-              ) : null}
-              <div className="min-w-0 flex-1">
-                <TrackRow
-                  track={track}
-                  onPress={(t) => void playTrack(t, { tracks, label: playlist.name })}
-                  onMore={setAddingTrack}
-                  isPlaying={currentId === track.id && isPlaying}
-                />
-              </div>
-            </div>
-          ))
+              );
+            })}
+          </div>
         ) : (
           <div className="rounded-md border border-line bg-glass p-4 text-sm text-muted">
             No songs yet. Add tracks from Search.
