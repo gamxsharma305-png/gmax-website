@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { AUTO_PLAYLISTS } from "@/lib/gmax/catalog";
-import { searchAll } from "@/lib/gmax/search";
+import { searchCatalog } from "@/lib/gmax/search";
 import { likedPlaylist, useLibrary } from "@/store/library";
 import { usePlayer } from "@/store/player";
 import { useUi } from "@/store/ui";
@@ -60,7 +60,7 @@ export function LibraryView() {
     setAutoError(null);
     setAutoLoading(id);
     try {
-      const res = await searchAll(query);
+      const res = await searchCatalog(query, { limit: 25 });
       const tracks = res.tracks;
       if (!tracks.length) {
         setAutoError("No songs found for this mix. Try again.");
