@@ -35,7 +35,6 @@ let wantPlay = false;
 let watchTimer: number | null = null;
 let lastWatchPos = 0;
 let stallTicks = 0;
-let blobUrl: string | null = null;
 
 const YT_PLAYING = 1;
 const YT_PAUSED = 2;
@@ -53,13 +52,6 @@ async function requestWakeLock() {
 async function releaseWakeLock() {
   try { await wakeLock?.release(); } catch { /* ignore */ }
   wakeLock = null;
-}
-
-function revokeBlob() {
-  if (blobUrl) {
-    try { URL.revokeObjectURL(blobUrl); } catch { /* */ }
-    blobUrl = null;
-  }
 }
 
 function startPlayWatchdog() {
@@ -114,14 +106,13 @@ function scheduleNetRetry() {
 function ensureAudio() {
   if (audio) return audio;
 
-  // Prefer a real DOM node — some Android WebViews only keep background audio for attached elements
   const el = document.createElement("audio");
   el.id = "gmax-audio-el";
   el.setAttribute("playsinline", "true");
   el.setAttribute("webkit-playsinline", "true");
   el.setAttribute("preload", "auto");
-  el.style.cssText = "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1";
-  // Do NOT set crossOrigin — breaks many CDNs
+  el.style.cssText =
+    "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1";
   document.body.appendChild(el);
   audio = el;
 
@@ -129,7 +120,9 @@ function ensureAudio() {
     netRetries = 0;
     handlers?.onPlay();
     void requestWakeLock();
-    try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; } catch { /* */ }
+    try {
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
+    } catch { /* */ }
   });
   audio.addEventListener("pause", () => {
     if (mode === "audio" && wantPlay) {
@@ -137,7 +130,9 @@ function ensureAudio() {
       return;
     }
     if (mode === "audio") handlers?.onPause();
-    try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused"; } catch { /* */ }
+    try {
+      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+    } catch { /* */ }
   });
   audio.addEventListener("ended", () => {
     if (mode === "audio") handlers?.onEnded();
@@ -176,7 +171,10 @@ function ensureAudio() {
 }
 
 function stopPoll() {
-  if (poll != null) { clearInterval(poll); poll = null; }
+  if (poll != null) {
+    clearInterval(poll);
+    poll = null;
+  }
 }
 
 function startYtPoll() {
@@ -213,18 +211,30 @@ function bindMediaSession(track: Track) {
     });
     navigator.mediaSession.playbackState = "playing";
     void requestWakeLock();
-    navigator.mediaSession.setActionHandler("play", () => { void engineResume(); });
-    navigator.mediaSession.setActionHandler("pause", () => { enginePause(); });
-    navigator.mediaSession.setActionHandler("stop", () => { engineStop(); });
+    navigator.mediaSession.setActionHandler("play", () => {
+      void engineResume();
+    });
+    navigator.mediaSession.setActionHandler("pause", () => {
+      enginePause();
+    });
+    navigator.mediaSession.setActionHandler("stop", () => {
+      engineStop();
+    });
     navigator.mediaSession.setActionHandler("seekbackward", (d) => {
       const off = d.seekOffset ?? 10;
       if (mode === "audio" && audio) audio.currentTime = Math.max(0, audio.currentTime - off);
-      else if (yt) try { yt.seekTo(Math.max(0, yt.getCurrentTime() - off), true); } catch { /* */ }
+      else if (yt)
+        try {
+          yt.seekTo(Math.max(0, yt.getCurrentTime() - off), true);
+        } catch { /* */ }
     });
     navigator.mediaSession.setActionHandler("seekforward", (d) => {
       const off = d.seekOffset ?? 10;
       if (mode === "audio" && audio) audio.currentTime = audio.currentTime + off;
-      else if (yt) try { yt.seekTo(yt.getCurrentTime() + off, true); } catch { /* */ }
+      else if (yt)
+        try {
+          yt.seekTo(yt.getCurrentTime() + off, true);
+        } catch { /* */ }
     });
     navigator.mediaSession.setActionHandler("seekto", (d) => {
       if (d.seekTime != null) engineSeek(d.seekTime);
@@ -291,15 +301,20 @@ async function ensureYtApi(): Promise<void> {
   if (typeof window === "undefined") return;
   if ((window as unknown as { YT?: { Player: unknown } }).YT?.Player) return;
   await new Promise<void>((resolve, reject) => {
-    const prev = (window as unknown as { onYouTubeIframeAPIReady?: () => void }).onYouTubeIframeAPIReady;
-    (window as unknown as { onYouTubeIframeAPIReady?: () => void }).onYouTubeIframeAPIReady = () => {
-      prev?.();
-      resolve();
-    };
+    const prev = (window as unknown as { onYouTubeIframeAPIReady?: () => void })
+      .onYouTubeIframeAPIReady;
+    (window as unknown as { onYouTubeIframeAPIReady?: () => void }).onYouTubeIframeAPIReady =
+      () => {
+        prev?.();
+        resolve();
+      };
     if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
       const s = document.createElement("script");
       s.src = "https://www.youtube.com/iframe_api";
-      s.onerror = () => { ytFailed = true; reject(new Error("YT API")); };
+      s.onerror = () => {
+        ytFailed = true;
+        reject(new Error("YT API"));
+      };
       document.head.appendChild(s);
     }
     window.setTimeout(() => resolve(), 8000);
@@ -313,19 +328,40 @@ async function getYtPlayer(): Promise<YtPlayer> {
   if (!host) {
     host = document.createElement("div");
     host.id = "gmax-yt-host";
-    host.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px;bottom:0";
+    host.style.cssText =
+      "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px;bottom:0";
     document.body.appendChild(host);
   }
-  const YT = (window as unknown as { YT: { Player: new (el: string | HTMLElement, opts: object) => YtPlayer } }).YT;
+  const YT = (
+    window as unknown as {
+      YT: { Player: new (el: string | HTMLElement, opts: object) => YtPlayer };
+    }
+  ).YT;
   yt = await new Promise<YtPlayer>((resolve, reject) => {
     try {
       const player = new YT.Player(host!, {
         height: "1",
         width: "1",
-        playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0, playsinline: 1, enablejsapi: 1 },
+        playerVars: {
+          autoplay: 0,
+          controls: 0,
+          modestbranding: 1,
+          rel: 0,
+          playsinline: 1,
+          enablejsapi: 1,
+        },
         events: {
           onReady: () => resolve(player),
-          onError: () => handlers?.onError("This video can't be played here."),
+          onError: (e: { data?: number }) => {
+            const code = e?.data;
+            const msg =
+              code === 101 || code === 150
+                ? "This YouTube video blocks embedding."
+                : code === 100
+                  ? "YouTube video not available."
+                  : "This video can't be played here.";
+            handlers?.onError(msg);
+          },
           onStateChange: (e: { data: number }) => {
             if (mode !== "youtube") return;
             if (e.data === YT_PLAYING) {
@@ -338,38 +374,24 @@ async function getYtPlayer(): Promise<YtPlayer> {
           },
         },
       });
-    } catch (err) { reject(err); }
+    } catch (err) {
+      reject(err);
+    }
   });
-  try { yt.setVolume(Math.round(volume * 100)); } catch { /* */ }
-  return yt;
-}
-
-/** Load URL — for /api/audio try blob first so playback is local (better background). */
-async function resolvePlayableSrc(url: string): Promise<string> {
-  if (!url.includes("/api/audio")) return url;
   try {
-    const ctrl = new AbortController();
-    const timer = window.setTimeout(() => ctrl.abort(), 45000);
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!res.ok) return url;
-    const blob = await res.blob();
-    if (blob.size < 1000) return url;
-    revokeBlob();
-    blobUrl = URL.createObjectURL(blob);
-    return blobUrl;
-  } catch {
-    return url;
-  }
+    yt.setVolume(Math.round(volume * 100));
+  } catch { /* */ }
+  return yt;
 }
 
 async function playViaAudio(track: Track, url: string): Promise<boolean> {
   mode = "audio";
-  try { yt?.pauseVideo(); } catch { /* */ }
+  try {
+    yt?.pauseVideo();
+  } catch { /* */ }
   const el = ensureAudio();
   handlers?.onBuffer(true);
-  const playUrl = await resolvePlayableSrc(url);
-  el.src = playUrl;
+  el.src = url;
   el.volume = volume;
   try {
     await el.play();
@@ -389,18 +411,14 @@ export async function enginePlay(track: Track) {
   stopPoll();
   handlers?.onBuffer(true);
 
-  const stream = safeUrl(track.streamUrl || "");
-  if (stream) {
-    const ok = await playViaAudio(track, stream);
-    if (ok) return;
-  }
-
-  // Avoid YouTube iframe when possible — bad for background.
-  // Only use if we have videoId and no stream worked.
-  if (track.videoId && !ytFailed && !stream) {
+  // —— YouTube iframe FIRST (classic reliable path) ——
+  if (track.videoId && !ytFailed) {
     mode = "youtube";
     try {
-      if (audio) { audio.pause(); audio.removeAttribute("src"); }
+      if (audio) {
+        audio.pause();
+        audio.removeAttribute("src");
+      }
       const player = await getYtPlayer();
       player.loadVideoById(track.videoId);
       player.playVideo();
@@ -409,7 +427,16 @@ export async function enginePlay(track: Track) {
       return;
     } catch {
       ytFailed = true;
+      // fall through to HTML5 audio if any
     }
+  }
+
+  // —— HTML5 audio (Saavn / Audius / preview) ——
+  const stream = safeUrl(track.streamUrl || "");
+  // Skip broken /api/audio proxy for play — use only real CDN streams
+  if (stream && !stream.includes("/api/audio")) {
+    const ok = await playViaAudio(track, stream);
+    if (ok) return;
   }
 
   const preview = safeUrl(track.previewUrl || "");
@@ -426,7 +453,9 @@ export function enginePause() {
   wantPlay = false;
   void releaseWakeLock();
   if (mode === "youtube") {
-    try { yt?.pauseVideo(); } catch { /* */ }
+    try {
+      yt?.pauseVideo();
+    } catch { /* */ }
   } else {
     audio?.pause();
   }
@@ -437,7 +466,9 @@ export async function engineResume() {
   startPlayWatchdog();
   void requestWakeLock();
   if (mode === "youtube") {
-    try { yt?.playVideo(); } catch { /* */ }
+    try {
+      yt?.playVideo();
+    } catch { /* */ }
     return;
   }
   if (!audio) return;
@@ -450,7 +481,9 @@ export async function engineResume() {
 
 export function engineSeek(seconds: number) {
   if (mode === "youtube") {
-    try { yt?.seekTo(seconds, true); } catch { /* */ }
+    try {
+      yt?.seekTo(seconds, true);
+    } catch { /* */ }
     return;
   }
   if (audio) audio.currentTime = Math.max(0, seconds);
@@ -459,7 +492,9 @@ export function engineSeek(seconds: number) {
 export function engineSetVolume(v: number) {
   volume = Math.min(1, Math.max(0, v));
   if (audio) audio.volume = volume;
-  try { yt?.setVolume(Math.round(volume * 100)); } catch { /* */ }
+  try {
+    yt?.setVolume(Math.round(volume * 100));
+  } catch { /* */ }
 }
 
 export function engineStop() {
@@ -468,7 +503,9 @@ export function engineStop() {
   stopPoll();
   void releaseWakeLock();
   audio?.pause();
-  try { yt?.pauseVideo(); } catch { /* */ }
+  try {
+    yt?.pauseVideo();
+  } catch { /* */ }
 }
 
 export async function engineEnterPictureInPicture(): Promise<boolean> {
