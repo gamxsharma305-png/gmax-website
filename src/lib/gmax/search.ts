@@ -98,37 +98,52 @@ export type ResolveResult = {
   thumbnail?: string | null;
 };
 
-/** Fetch direct audio URL from our youtubei.js stream API. */
+/**
+ * Resolve YouTube video → same-origin proxy URL for HTML5 audio.
+ * Uses /api/audio so playback works from the user's device (CDN URLs are IP-bound).
+ */
 export async function resolveYouTubeStream(
   videoId: string,
 ): Promise<ResolveResult | null> {
   const id = videoId.trim();
   if (!id) return null;
+
+  // Same-origin proxy — required for background + cross-device playback
+  const proxyUrl = `/api/audio?videoId=${encodeURIComponent(id)}`;
+
   try {
     const res = await fetch(`/api/stream?videoId=${encodeURIComponent(id)}`);
-    if (!res.ok) return null;
-    const json = (await res.json()) as {
-      success?: boolean;
-      data?: {
-        url?: string;
-        title?: string;
-        artist?: string;
-        thumbnail?: string;
-        duration?: number;
+    if (res.ok) {
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: {
+          title?: string;
+          artist?: string;
+          thumbnail?: string;
+          duration?: number;
+        };
       };
-    };
-    if (!json.success || !json.data?.url) return null;
-    return {
-      videoId: id,
-      streamUrl: json.data.url,
-      duration: json.data.duration ?? null,
-      title: json.data.title ?? null,
-      artist: json.data.artist ?? null,
-      thumbnail: json.data.thumbnail ?? null,
-    };
+      if (json.success && json.data) {
+        return {
+          videoId: id,
+          streamUrl: proxyUrl,
+          duration: json.data.duration ?? null,
+          title: json.data.title ?? null,
+          artist: json.data.artist ?? null,
+          thumbnail: json.data.thumbnail ?? null,
+        };
+      }
+    }
   } catch {
-    return null;
+    /* still return proxy URL — audio endpoint resolves on its own */
   }
+
+  // Even if metadata fails, proxy can still stream
+  return {
+    videoId: id,
+    streamUrl: proxyUrl,
+    duration: null,
+  };
 }
 
 export async function resolveVideoId(
@@ -146,7 +161,6 @@ export async function resolveVideoId(
     });
     if (res.ok) {
       const data = (await res.json()) as ResolveResult;
-      // If resolve only returned a videoId, upgrade to real stream URL
       if (data.videoId && !data.streamUrl) {
         const stream = await resolveYouTubeStream(data.videoId);
         if (stream?.streamUrl) {

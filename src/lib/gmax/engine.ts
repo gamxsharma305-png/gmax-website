@@ -1,5 +1,4 @@
 import type { Track } from "./types";
-import { canPlay } from "./normalize";
 import { safeUrl, safeText } from "./text";
 
 type EngineHandlers = {
@@ -26,7 +25,6 @@ type YtPlayer = {
 
 let audio: HTMLAudioElement | null = null;
 let yt: YtPlayer | null = null;
-let ytReady = false;
 let ytFailed = false;
 let mode: "audio" | "youtube" = "audio";
 let handlers: EngineHandlers | null = null;
@@ -81,7 +79,7 @@ function startPlayWatchdog() {
       }
     } else stallTicks = 0;
     lastWatchPos = pos;
-  }, 1500);
+  }, 2000);
 }
 
 function stopPlayWatchdog() {
@@ -99,7 +97,7 @@ function scheduleNetRetry() {
     netRetryTimer = null;
     if (!wantPlay || !audio) return;
     netRetries += 1;
-    if (netRetries > 6) {
+    if (netRetries > 8) {
       handlers?.onError("Network weak — tap play to retry.");
       return;
     }
@@ -117,14 +115,14 @@ function scheduleNetRetry() {
         });
       }
     } catch { /* ignore */ }
-  }, 600 + netRetries * 400);
+  }, 500 + netRetries * 350);
 }
 
 function ensureAudio() {
   if (audio) return audio;
   audio = new Audio();
   audio.preload = "auto";
-  audio.crossOrigin = "anonymous";
+  // Do NOT set crossOrigin=anonymous — breaks non-CORS CDNs and is unnecessary for playback
   try { audio.setAttribute("playsinline", "true"); } catch { /* */ }
   try { audio.setAttribute("webkit-playsinline", "true"); } catch { /* */ }
   try { (audio as HTMLAudioElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = false; } catch { /* */ }
@@ -136,6 +134,7 @@ function ensureAudio() {
     try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; } catch { /* */ }
   });
   audio.addEventListener("pause", () => {
+    // Keep wanting play when tab is backgrounded — OS may pause briefly
     if (mode === "audio" && wantPlay) {
       scheduleNetRetry();
       return;
@@ -176,7 +175,7 @@ function ensureAudio() {
     handlers?.onBuffer(false);
   });
   audio.addEventListener("error", () => {
-    if (wantPlay) {
+    if (wantPlay && netRetries < 6) {
       scheduleNetRetry();
       return;
     }
@@ -264,7 +263,10 @@ function keepAliveInBackground() {
   };
 
   document.addEventListener("visibilitychange", () => {
-    kick();
+    // Never pause on hide — resume if OS interrupted us
+    if (document.visibilityState === "hidden" || document.visibilityState === "visible") {
+      kick();
+    }
   });
   window.addEventListener("pageshow", kick);
   window.addEventListener("focus", kick);
@@ -273,13 +275,15 @@ function keepAliveInBackground() {
     kick();
   });
   document.addEventListener("freeze", () => {
-    /* wantPlay stays true */
+    /* keep wantPlay true */
   });
   document.addEventListener("resume", kick);
+
+  // Lightweight keep-alive while we intend to play
   window.setInterval(() => {
     if (!wantPlay) return;
     if (mode === "audio" && audio) {
-      if (audio.paused || audio.readyState < 2) {
+      if (audio.paused) {
         void audio.play().catch(() => scheduleNetRetry());
       }
     } else if (mode === "youtube" && yt) {
@@ -288,7 +292,7 @@ function keepAliveInBackground() {
         if (st === YT_PAUSED || st === YT_BUFFERING) yt.playVideo();
       } catch { /* ignore */ }
     }
-  }, 4000);
+  }, 3000);
 }
 
 let inited = false;
@@ -340,7 +344,7 @@ async function getYtPlayer(): Promise<YtPlayer> {
         width: "1",
         playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0, playsinline: 1, enablejsapi: 1 },
         events: {
-          onReady: () => { ytReady = true; resolve(player); },
+          onReady: () => { resolve(player); },
           onError: (e: { data?: number }) => {
             const code = e?.data;
             const msg =
@@ -373,7 +377,11 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
   mode = "audio";
   try { yt?.pauseVideo(); } catch { /* */ }
   const el = ensureAudio();
-  el.src = url;
+  // Cache-bust same-origin proxy so browser does not reuse a dead buffer
+  const finalUrl = url.startsWith("/api/audio")
+    ? `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`
+    : url;
+  el.src = finalUrl;
   el.volume = volume;
   try {
     await el.play();
@@ -392,15 +400,14 @@ export async function enginePlay(track: Track) {
   stopPoll();
   handlers?.onBuffer(true);
 
-  // Prefer HTML5 audio when we have a direct stream (incl. YouTube via /api/stream)
+  // Prefer HTML5 audio (same-origin /api/audio proxy for YouTube)
   const stream = safeUrl(track.streamUrl || "");
   if (stream) {
     const ok = await playViaAudio(track, stream);
     if (ok) return;
-    // stream URL failed — fall through to YouTube iframe if possible
   }
 
-  // Fallback: YouTube iframe (limited background support)
+  // Fallback: YouTube iframe (poor background support)
   if (track.videoId && !ytFailed) {
     mode = "youtube";
     try {
@@ -416,7 +423,6 @@ export async function enginePlay(track: Track) {
     }
   }
 
-  // Last resort: preview URL
   const preview = safeUrl(track.previewUrl || "");
   if (preview) {
     const ok = await playViaAudio(track, preview);
@@ -476,7 +482,6 @@ export function engineStop() {
   try { yt?.pauseVideo(); } catch { /* */ }
 }
 
-/** Best-effort Document / video PiP for YouTube (no-op if unsupported). */
 export async function engineEnterPictureInPicture(): Promise<boolean> {
   if (typeof window === "undefined" || mode !== "youtube") return false;
   try {
