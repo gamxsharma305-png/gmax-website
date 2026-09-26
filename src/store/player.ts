@@ -60,6 +60,10 @@ function shuffleOrder(length: number, pin?: number): number[] {
   return pin == null ? rest : [pin, ...rest];
 }
 
+function isYouTubeTrack(track: Track): boolean {
+  return track.provider === "youtube" || Boolean(track.videoId);
+}
+
 function bindEngine() {
   if (engineBound || typeof window === "undefined") return;
   engineBound = true;
@@ -97,30 +101,49 @@ function bindEngine() {
 }
 
 /**
- * Resolve a real HTML5-playable URL.
- * Priority for BACKGROUND playback:
- *  1. Existing non-YouTube streamUrl (Saavn / Audius)
- *  2. Saavn match by title+artist (works offline from CDN, best background)
- *  3. Audius match
- *  4. YouTube same-origin /api/audio proxy
+ * Option B: YouTube tracks play ONLY via YouTube (/api/audio or iframe).
+ * Never swap in Saavn/Audius for a different song.
+ * Non-YouTube tracks keep their own streams / resolve path.
  */
 async function maybeResolve(track: Track, force = false): Promise<Track> {
-  // Already have a direct CDN stream that is not our YT proxy — use it
-  if (
-    !force &&
-    track.streamUrl &&
-    !track.streamUrl.includes("/api/audio") &&
-    track.provider !== "youtube"
-  ) {
+  const token = ++resolveInflight;
+
+  // —— YouTube: exact video only ——
+  if (isYouTubeTrack(track)) {
+    if (!force && track.streamUrl?.includes("/api/audio")) {
+      return track;
+    }
+    if (track.videoId) {
+      try {
+        const stream = await resolveYouTubeStream(track.videoId);
+        if (token !== resolveInflight) return track;
+        if (stream?.streamUrl) {
+          return {
+            ...track,
+            streamUrl: stream.streamUrl,
+            duration: stream.duration || track.duration,
+            albumImageUrl: stream.thumbnail || track.albumImageUrl,
+            title: track.title,
+            artist: track.artist,
+          };
+        }
+      } catch {
+        /* iframe fallback in engine */
+      }
+    }
+    // Keep videoId for engine iframe fallback — do not Saavn-substitute
+    return track;
+  }
+
+  // —— Non-YouTube: existing stream ——
+  if (!force && track.streamUrl) {
     return track;
   }
 
   const title = track.title?.trim() || "";
   const artist = track.artist?.name?.trim() || "";
-  const token = ++resolveInflight;
 
-  // 1) Saavn — best for Hindi/Punjabi + true background
-  if (title) {
+  if (track.provider === "saavn" && title) {
     try {
       const saavn = await resolveSaavnStream(title, artist);
       if (token !== resolveInflight) return track;
@@ -129,7 +152,6 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
           ...track,
           streamUrl: saavn.streamUrl,
           duration: saavn.duration || track.duration,
-          // keep videoId for UI, but play via Saavn audio
         };
       }
     } catch {
@@ -137,8 +159,7 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
     }
   }
 
-  // 2) Audius
-  if (title) {
+  if (track.provider === "audius" && title) {
     try {
       const audius = await resolveAudiusStream(title, artist);
       if (token !== resolveInflight) return track;
@@ -154,26 +175,8 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
     }
   }
 
-  // 3) YouTube proxy (same-origin)
-  if (track.videoId) {
-    try {
-      const stream = await resolveYouTubeStream(track.videoId);
-      if (token !== resolveInflight) return track;
-      if (stream?.streamUrl) {
-        return {
-          ...track,
-          streamUrl: stream.streamUrl,
-          duration: stream.duration || track.duration,
-          albumImageUrl: stream.thumbnail || track.albumImageUrl,
-        };
-      }
-    } catch {
-      /* next */
-    }
-  }
-
-  // 4) Generic resolve API
-  if (title) {
+  // Generic resolve for itunes / unknown without videoId
+  if (title && !track.videoId) {
     try {
       const resolved = await resolveVideoId(title, artist);
       if (token !== resolveInflight) return track;
@@ -182,21 +185,7 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
           ...track,
           streamUrl: resolved.streamUrl,
           duration: resolved.duration || track.duration,
-          videoId: track.videoId || resolved.videoId || undefined,
         };
-      }
-      if (resolved?.videoId && !track.videoId) {
-        const stream = await resolveYouTubeStream(resolved.videoId);
-        if (token !== resolveInflight) return track;
-        if (stream?.streamUrl) {
-          return {
-            ...track,
-            videoId: resolved.videoId,
-            streamUrl: stream.streamUrl,
-            duration: stream.duration || track.duration,
-          };
-        }
-        return { ...track, videoId: resolved.videoId };
       }
     } catch {
       /* fall through */
@@ -253,7 +242,9 @@ async function prefetchNeighbor() {
   const nextIndex = seq[(pos + 1) % seq.length];
   if (nextIndex == null) return;
   const t = queue[nextIndex];
-  if (!t || (t.streamUrl && !t.streamUrl.includes("/api/audio"))) return;
+  if (!t) return;
+  if (t.streamUrl && !isYouTubeTrack(t)) return;
+  if (isYouTubeTrack(t) && t.streamUrl?.includes("/api/audio")) return;
   try {
     const resolved = await maybeResolve(t, true);
     if (resolved.streamUrl || resolved.videoId) {
