@@ -20,7 +20,6 @@ type YtPlayer = {
   getPlayerState: () => number;
   setVolume: (v: number) => void;
   destroy: () => void;
-  getIframe?: () => HTMLIFrameElement;
 };
 
 let audio: HTMLAudioElement | null = null;
@@ -36,6 +35,7 @@ let wantPlay = false;
 let watchTimer: number | null = null;
 let lastWatchPos = 0;
 let stallTicks = 0;
+let blobUrl: string | null = null;
 
 const YT_PLAYING = 1;
 const YT_PAUSED = 2;
@@ -53,6 +53,13 @@ async function requestWakeLock() {
 async function releaseWakeLock() {
   try { await wakeLock?.release(); } catch { /* ignore */ }
   wakeLock = null;
+}
+
+function revokeBlob() {
+  if (blobUrl) {
+    try { URL.revokeObjectURL(blobUrl); } catch { /* */ }
+    blobUrl = null;
+  }
 }
 
 function startPlayWatchdog() {
@@ -97,35 +104,26 @@ function scheduleNetRetry() {
     netRetryTimer = null;
     if (!wantPlay || !audio) return;
     netRetries += 1;
-    if (netRetries > 8) {
-      handlers?.onError("Network weak — tap play to retry.");
-      return;
-    }
-    const t = audio.currentTime || 0;
-    const src = audio.src;
+    if (netRetries > 8) return;
     try {
-      if (src) {
-        void audio.play().catch(() => {
-          try {
-            audio!.src = src;
-            audio!.load();
-            audio!.currentTime = Math.max(0, t - 0.5);
-            void audio!.play();
-          } catch { /* ignore */ }
-        });
-      }
-    } catch { /* ignore */ }
-  }, 500 + netRetries * 350);
+      void audio.play().catch(() => { /* */ });
+    } catch { /* */ }
+  }, 400 + netRetries * 300);
 }
 
 function ensureAudio() {
   if (audio) return audio;
-  audio = new Audio();
-  audio.preload = "auto";
-  // Do NOT set crossOrigin=anonymous — breaks non-CORS CDNs and is unnecessary for playback
-  try { audio.setAttribute("playsinline", "true"); } catch { /* */ }
-  try { audio.setAttribute("webkit-playsinline", "true"); } catch { /* */ }
-  try { (audio as HTMLAudioElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = false; } catch { /* */ }
+
+  // Prefer a real DOM node — some Android WebViews only keep background audio for attached elements
+  const el = document.createElement("audio");
+  el.id = "gmax-audio-el";
+  el.setAttribute("playsinline", "true");
+  el.setAttribute("webkit-playsinline", "true");
+  el.setAttribute("preload", "auto");
+  el.style.cssText = "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1";
+  // Do NOT set crossOrigin — breaks many CDNs
+  document.body.appendChild(el);
+  audio = el;
 
   audio.addEventListener("play", () => {
     netRetries = 0;
@@ -134,7 +132,6 @@ function ensureAudio() {
     try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing"; } catch { /* */ }
   });
   audio.addEventListener("pause", () => {
-    // Keep wanting play when tab is backgrounded — OS may pause briefly
     if (mode === "audio" && wantPlay) {
       scheduleNetRetry();
       return;
@@ -159,23 +156,17 @@ function ensureAudio() {
       } catch { /* */ }
     }
   });
-  audio.addEventListener("waiting", () => {
-    handlers?.onBuffer(true);
-    if (wantPlay) scheduleNetRetry();
-  });
+  audio.addEventListener("waiting", () => handlers?.onBuffer(true));
   audio.addEventListener("stalled", () => {
     handlers?.onBuffer(true);
     if (wantPlay) scheduleNetRetry();
-  });
-  audio.addEventListener("suspend", () => {
-    if (wantPlay && audio && audio.paused) scheduleNetRetry();
   });
   audio.addEventListener("playing", () => {
     netRetries = 0;
     handlers?.onBuffer(false);
   });
   audio.addEventListener("error", () => {
-    if (wantPlay && netRetries < 6) {
+    if (wantPlay && netRetries < 5) {
       scheduleNetRetry();
       return;
     }
@@ -262,44 +253,33 @@ function keepAliveInBackground() {
     void engineResume();
   };
 
-  document.addEventListener("visibilitychange", () => {
-    // Never pause on hide — resume if OS interrupted us
-    if (document.visibilityState === "hidden" || document.visibilityState === "visible") {
-      kick();
-    }
-  });
+  document.addEventListener("visibilitychange", kick);
   window.addEventListener("pageshow", kick);
   window.addEventListener("focus", kick);
   window.addEventListener("online", () => {
     netRetries = 0;
     kick();
   });
-  document.addEventListener("freeze", () => {
-    /* keep wantPlay true */
-  });
   document.addEventListener("resume", kick);
 
-  // Lightweight keep-alive while we intend to play
   window.setInterval(() => {
     if (!wantPlay) return;
-    if (mode === "audio" && audio) {
-      if (audio.paused) {
-        void audio.play().catch(() => scheduleNetRetry());
-      }
+    if (mode === "audio" && audio && audio.paused) {
+      void audio.play().catch(() => scheduleNetRetry());
     } else if (mode === "youtube" && yt) {
       try {
         const st = yt.getPlayerState();
         if (st === YT_PAUSED || st === YT_BUFFERING) yt.playVideo();
-      } catch { /* ignore */ }
+      } catch { /* */ }
     }
-  }, 3000);
+  }, 2500);
 }
 
 let inited = false;
 
 export function initEngine(h: EngineHandlers) {
   handlers = h;
-  ensureAudio();
+  if (typeof document !== "undefined") ensureAudio();
   if (!inited) {
     inited = true;
     keepAliveInBackground();
@@ -344,17 +324,8 @@ async function getYtPlayer(): Promise<YtPlayer> {
         width: "1",
         playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0, playsinline: 1, enablejsapi: 1 },
         events: {
-          onReady: () => { resolve(player); },
-          onError: (e: { data?: number }) => {
-            const code = e?.data;
-            const msg =
-              code === 101 || code === 150
-                ? "This YouTube video blocks embedding."
-                : code === 100
-                  ? "YouTube video not available."
-                  : "This video can't be played here.";
-            handlers?.onError(msg);
-          },
+          onReady: () => resolve(player),
+          onError: () => handlers?.onError("This video can't be played here."),
           onStateChange: (e: { data: number }) => {
             if (mode !== "youtube") return;
             if (e.data === YT_PLAYING) {
@@ -373,15 +344,32 @@ async function getYtPlayer(): Promise<YtPlayer> {
   return yt;
 }
 
+/** Load URL — for /api/audio try blob first so playback is local (better background). */
+async function resolvePlayableSrc(url: string): Promise<string> {
+  if (!url.includes("/api/audio")) return url;
+  try {
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(() => ctrl.abort(), 45000);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return url;
+    const blob = await res.blob();
+    if (blob.size < 1000) return url;
+    revokeBlob();
+    blobUrl = URL.createObjectURL(blob);
+    return blobUrl;
+  } catch {
+    return url;
+  }
+}
+
 async function playViaAudio(track: Track, url: string): Promise<boolean> {
   mode = "audio";
   try { yt?.pauseVideo(); } catch { /* */ }
   const el = ensureAudio();
-  // Cache-bust same-origin proxy so browser does not reuse a dead buffer
-  const finalUrl = url.startsWith("/api/audio")
-    ? `${url}${url.includes("?") ? "&" : "?"}_t=${Date.now()}`
-    : url;
-  el.src = finalUrl;
+  handlers?.onBuffer(true);
+  const playUrl = await resolvePlayableSrc(url);
+  el.src = playUrl;
   el.volume = volume;
   try {
     await el.play();
@@ -389,6 +377,7 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
     handlers?.onBuffer(false);
     return true;
   } catch {
+    handlers?.onBuffer(false);
     return false;
   }
 }
@@ -400,15 +389,15 @@ export async function enginePlay(track: Track) {
   stopPoll();
   handlers?.onBuffer(true);
 
-  // Prefer HTML5 audio (same-origin /api/audio proxy for YouTube)
   const stream = safeUrl(track.streamUrl || "");
   if (stream) {
     const ok = await playViaAudio(track, stream);
     if (ok) return;
   }
 
-  // Fallback: YouTube iframe (poor background support)
-  if (track.videoId && !ytFailed) {
+  // Avoid YouTube iframe when possible — bad for background.
+  // Only use if we have videoId and no stream worked.
+  if (track.videoId && !ytFailed && !stream) {
     mode = "youtube";
     try {
       if (audio) { audio.pause(); audio.removeAttribute("src"); }
@@ -483,45 +472,5 @@ export function engineStop() {
 }
 
 export async function engineEnterPictureInPicture(): Promise<boolean> {
-  if (typeof window === "undefined" || mode !== "youtube") return false;
-  try {
-    const host = document.getElementById("gmax-yt-host");
-    const iframe = host?.querySelector("iframe") as HTMLIFrameElement | null;
-    if (iframe) {
-      iframe.setAttribute(
-        "allow",
-        "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
-      );
-      iframe.setAttribute("allowfullscreen", "true");
-    }
-    const dpip = (window as unknown as {
-      documentPictureInPicture?: {
-        requestWindow: (o?: { width?: number; height?: number }) => Promise<Window>;
-      };
-    }).documentPictureInPicture;
-    if (dpip?.requestWindow && host) {
-      const win = await dpip.requestWindow({ width: 360, height: 220 });
-      const doc = win.document;
-      doc.body.style.cssText = "margin:0;background:#000;width:100%;height:100%";
-      host.style.cssText = "width:100%;height:100%";
-      doc.body.appendChild(host);
-      try { yt?.playVideo(); } catch { /* */ }
-      win.addEventListener("pagehide", () => {
-        document.body.appendChild(host);
-        host.style.cssText =
-          "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px;bottom:0";
-        try { yt?.playVideo(); } catch { /* */ }
-      });
-      return true;
-    }
-    for (const v of document.querySelectorAll("video")) {
-      if (typeof v.requestPictureInPicture === "function" && document.pictureInPictureEnabled) {
-        await v.requestPictureInPicture();
-        return true;
-      }
-    }
-  } catch {
-    return false;
-  }
   return false;
 }

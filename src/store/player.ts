@@ -11,6 +11,8 @@ import {
 } from "@/lib/gmax/engine";
 import { canPlay } from "@/lib/gmax/normalize";
 import { resolveVideoId, resolveYouTubeStream } from "@/lib/gmax/search";
+import { resolveSaavnStream } from "@/lib/gmax/saavn";
+import { resolveAudiusStream } from "@/lib/gmax/audius";
 import { useLibrary } from "./library";
 
 type PlayerState = {
@@ -94,13 +96,66 @@ function bindEngine() {
   );
 }
 
-/** Resolve stream URL — YouTube videoId → /api/stream for real HTML5 audio. */
+/**
+ * Resolve a real HTML5-playable URL.
+ * Priority for BACKGROUND playback:
+ *  1. Existing non-YouTube streamUrl (Saavn / Audius)
+ *  2. Saavn match by title+artist (works offline from CDN, best background)
+ *  3. Audius match
+ *  4. YouTube same-origin /api/audio proxy
+ */
 async function maybeResolve(track: Track, force = false): Promise<Track> {
-  if (!force && track.streamUrl) return track;
+  // Already have a direct CDN stream that is not our YT proxy — use it
+  if (
+    !force &&
+    track.streamUrl &&
+    !track.streamUrl.includes("/api/audio") &&
+    track.provider !== "youtube"
+  ) {
+    return track;
+  }
 
-  // YouTube: prefer direct audio stream (background playback)
-  if (track.videoId && (force || !track.streamUrl)) {
-    const token = ++resolveInflight;
+  const title = track.title?.trim() || "";
+  const artist = track.artist?.name?.trim() || "";
+  const token = ++resolveInflight;
+
+  // 1) Saavn — best for Hindi/Punjabi + true background
+  if (title) {
+    try {
+      const saavn = await resolveSaavnStream(title, artist);
+      if (token !== resolveInflight) return track;
+      if (saavn?.streamUrl) {
+        return {
+          ...track,
+          streamUrl: saavn.streamUrl,
+          duration: saavn.duration || track.duration,
+          // keep videoId for UI, but play via Saavn audio
+        };
+      }
+    } catch {
+      /* next */
+    }
+  }
+
+  // 2) Audius
+  if (title) {
+    try {
+      const audius = await resolveAudiusStream(title, artist);
+      if (token !== resolveInflight) return track;
+      if (audius?.streamUrl) {
+        return {
+          ...track,
+          streamUrl: audius.streamUrl,
+          duration: audius.duration || track.duration,
+        };
+      }
+    } catch {
+      /* next */
+    }
+  }
+
+  // 3) YouTube proxy (same-origin)
+  if (track.videoId) {
     try {
       const stream = await resolveYouTubeStream(track.videoId);
       if (token !== resolveInflight) return track;
@@ -113,49 +168,41 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
         };
       }
     } catch {
-      /* fall through — engine may use iframe */
+      /* next */
     }
   }
 
-  if (!track.title) return track;
-
-  // Already have youtube videoId and we tried stream — keep for iframe fallback
-  if (track.provider === "youtube" && track.videoId && !force) {
-    return track;
-  }
-
-  const needStream = force || !track.streamUrl;
-  if (!needStream && (track.videoId || track.previewUrl)) return track;
-
-  const token = ++resolveInflight;
-  try {
-    const resolved = await resolveVideoId(track.title, track.artist?.name ?? "");
-    if (token !== resolveInflight) return track;
-    if (resolved?.streamUrl) {
-      return {
-        ...track,
-        streamUrl: resolved.streamUrl,
-        duration: resolved.duration || track.duration,
-        videoId: track.videoId || resolved.videoId || undefined,
-      };
-    }
-    if (resolved?.videoId && !track.videoId) {
-      // Got videoId from resolve — try stream API once
-      const stream = await resolveYouTubeStream(resolved.videoId);
+  // 4) Generic resolve API
+  if (title) {
+    try {
+      const resolved = await resolveVideoId(title, artist);
       if (token !== resolveInflight) return track;
-      if (stream?.streamUrl) {
+      if (resolved?.streamUrl) {
         return {
           ...track,
-          videoId: resolved.videoId,
-          streamUrl: stream.streamUrl,
-          duration: stream.duration || track.duration,
+          streamUrl: resolved.streamUrl,
+          duration: resolved.duration || track.duration,
+          videoId: track.videoId || resolved.videoId || undefined,
         };
       }
-      return { ...track, videoId: resolved.videoId };
+      if (resolved?.videoId && !track.videoId) {
+        const stream = await resolveYouTubeStream(resolved.videoId);
+        if (token !== resolveInflight) return track;
+        if (stream?.streamUrl) {
+          return {
+            ...track,
+            videoId: resolved.videoId,
+            streamUrl: stream.streamUrl,
+            duration: stream.duration || track.duration,
+          };
+        }
+        return { ...track, videoId: resolved.videoId };
+      }
+    } catch {
+      /* fall through */
     }
-  } catch {
-    /* fall through */
   }
+
   return track;
 }
 
@@ -169,7 +216,6 @@ async function start(track: Track, forceResolve = false) {
     duration: track.duration || 0,
   });
 
-  // Always try to get a real stream URL (YouTube included)
   let resolved = await maybeResolve(track, forceResolve || !track.streamUrl);
 
   if (!resolved.streamUrl && !resolved.videoId && !resolved.previewUrl) {
@@ -207,7 +253,7 @@ async function prefetchNeighbor() {
   const nextIndex = seq[(pos + 1) % seq.length];
   if (nextIndex == null) return;
   const t = queue[nextIndex];
-  if (!t || t.streamUrl) return;
+  if (!t || (t.streamUrl && !t.streamUrl.includes("/api/audio"))) return;
   try {
     const resolved = await maybeResolve(t, true);
     if (resolved.streamUrl || resolved.videoId) {
@@ -219,7 +265,7 @@ async function prefetchNeighbor() {
       }
     }
   } catch {
-    /* ignore prefetch errors */
+    /* ignore */
   }
 }
 
@@ -293,7 +339,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       set({ index: nextIndex, error: null, isPlaying: true });
       const t = queue[nextIndex];
       if (t) {
-        void start(t, !t.streamUrl).finally(done);
+        void start(t, true).finally(done);
       } else {
         enginePause();
         set({ isPlaying: false });

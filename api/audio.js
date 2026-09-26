@@ -1,9 +1,8 @@
 import { Innertube, UniversalCache } from 'youtubei.js';
 
 /**
- * Same-origin audio proxy.
- * Direct googlevideo URLs are IP-bound to the server that requested them,
- * so the browser cannot play them. We resolve + pipe from the server instead.
+ * Same-origin audio proxy — buffers upstream then returns bytes.
+ * Streaming pipes often hang on Vercel; full buffer is more reliable under ~4MB.
  */
 
 let youtubeClient = null;
@@ -11,6 +10,9 @@ let clientPromise = null;
 
 /** @type {Map<string, { url: string, mime: string, expires: number }>} */
 const upstreamCache = new Map();
+
+/** @type {Map<string, { buf: Buffer, mime: string, expires: number }>} */
+const bodyCache = new Map();
 
 async function getYouTubeClient() {
   if (youtubeClient) return youtubeClient;
@@ -83,10 +85,52 @@ async function getUpstream(videoId) {
   const mime = (audioFormat.mime_type || 'audio/mp4').split(';')[0].trim();
   const entry = { url, mime, expires: Date.now() + 4 * 60 * 1000 };
   upstreamCache.set(videoId, entry);
-  // Cap cache size
   if (upstreamCache.size > 40) {
     const first = upstreamCache.keys().next().value;
     if (first) upstreamCache.delete(first);
+  }
+  return entry;
+}
+
+async function fetchFullBody(videoId) {
+  const cached = bodyCache.get(videoId);
+  if (cached && cached.expires > Date.now()) return cached;
+
+  let upstream = await getUpstream(videoId);
+  let res = await fetch(upstream.url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+      Accept: '*/*',
+    },
+  });
+
+  if (!res.ok) {
+    upstreamCache.delete(videoId);
+    upstream = await getUpstream(videoId);
+    res = await fetch(upstream.url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        Accept: '*/*',
+      },
+    });
+  }
+
+  if (!res.ok) throw new Error(`Upstream ${res.status}`);
+
+  const ab = await res.arrayBuffer();
+  const buf = Buffer.from(ab);
+  // Vercel hobby soft limit ~4.5MB — still return; client may get truncated on huge files
+  const entry = {
+    buf,
+    mime: upstream.mime || 'audio/mp4',
+    expires: Date.now() + 3 * 60 * 1000,
+  };
+  bodyCache.set(videoId, entry);
+  if (bodyCache.size > 12) {
+    const first = bodyCache.keys().next().value;
+    if (first) bodyCache.delete(first);
   }
   return entry;
 }
@@ -108,78 +152,38 @@ export default async function handler(req, res) {
   }
 
   try {
-    const upstream = await getUpstream(videoId);
+    const { buf, mime } = await fetchFullBody(videoId);
+    const total = buf.length;
     const range = req.headers.range;
 
-    const headers = {
-      'User-Agent':
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-      Accept: '*/*',
-    };
-    if (range) headers.Range = range;
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=120');
 
-    const upstreamRes = await fetch(upstream.url, { headers });
-
-    if (!upstreamRes.ok && upstreamRes.status !== 206) {
-      // URL may have expired — bust cache and retry once
-      upstreamCache.delete(videoId);
-      const retryUp = await getUpstream(videoId);
-      const retryRes = await fetch(retryUp.url, { headers });
-      if (!retryRes.ok && retryRes.status !== 206) {
-        return res.status(502).json({ error: 'Upstream audio failed', status: retryRes.status });
-      }
-      return pipeAudio(retryRes, res, retryUp.mime, req.method === 'HEAD');
-    }
-
-    return pipeAudio(upstreamRes, res, upstream.mime, req.method === 'HEAD');
-  } catch (err) {
-    console.error('[audio proxy]', videoId, err?.message || err);
-    return res.status(500).json({ error: err?.message || 'Proxy failed' });
-  }
-}
-
-async function pipeAudio(upstreamRes, res, mime, headOnly) {
-  res.status(upstreamRes.status);
-  res.setHeader('Content-Type', mime || upstreamRes.headers.get('content-type') || 'audio/mp4');
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Cache-Control', 'private, max-age=120');
-
-  const len = upstreamRes.headers.get('content-length');
-  if (len) res.setHeader('Content-Length', len);
-  const cr = upstreamRes.headers.get('content-range');
-  if (cr) res.setHeader('Content-Range', cr);
-
-  if (headOnly) {
-    return res.end();
-  }
-
-  // Stream body to client
-  const body = upstreamRes.body;
-  if (!body) {
-    const buf = Buffer.from(await upstreamRes.arrayBuffer());
-    return res.end(buf);
-  }
-
-  // Web ReadableStream → Node response
-  const reader = body.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        const chunk = Buffer.from(value);
-        const ok = res.write(chunk);
-        if (!ok) {
-          await new Promise((resolve) => res.once('drain', resolve));
+    if (range) {
+      const m = /bytes=(\d+)-(\d*)/.exec(range);
+      if (m) {
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? parseInt(m[2], 10) : total - 1;
+        const lo = Math.max(0, start);
+        const hi = Math.min(total - 1, end);
+        if (lo <= hi) {
+          const slice = buf.subarray(lo, hi + 1);
+          res.status(206);
+          res.setHeader('Content-Range', `bytes ${lo}-${hi}/${total}`);
+          res.setHeader('Content-Length', String(slice.length));
+          if (req.method === 'HEAD') return res.end();
+          return res.end(slice);
         }
       }
     }
-    res.end();
-  } catch (e) {
-    try {
-      res.end();
-    } catch {
-      /* */
-    }
+
+    res.status(200);
+    res.setHeader('Content-Length', String(total));
+    if (req.method === 'HEAD') return res.end();
+    return res.end(buf);
+  } catch (err) {
+    console.error('[audio proxy]', videoId, err?.message || err);
+    return res.status(500).json({ error: err?.message || 'Proxy failed' });
   }
 }
