@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { Track } from "@/lib/gmax/types";
 
 export type TabId = "home" | "search" | "history" | "library";
-export type Overlay = "none" | "nowplaying" | "settings" | "playlist";
+export type Overlay = "none" | "nowplaying" | "settings" | "playlist" | "premium";
 
 type UiState = {
   tab: TabId;
@@ -15,6 +15,7 @@ type UiState = {
   openNowPlaying: () => void;
   openSettings: () => void;
   openPlaylist: (id: string) => void;
+  openPremium: () => void;
   closeOverlay: () => void;
   setAddingTrack: (track: Track | null) => void;
   enterFloatBall: () => void;
@@ -31,6 +32,7 @@ export const useUi = create<UiState>((set) => ({
   openNowPlaying: () => set({ overlay: "nowplaying", floatBall: false }),
   openSettings: () => set({ overlay: "settings", floatBall: false }),
   openPlaylist: (id) => set({ overlay: "playlist", playlistId: id, floatBall: false }),
+  openPremium: () => set({ overlay: "premium", floatBall: false }),
   closeOverlay: () => set({ overlay: "none", playlistId: null }),
   setAddingTrack: (track) => set({ addingTrack: track }),
   enterFloatBall: () => set({ floatBall: true, overlay: "none", playlistId: null }),

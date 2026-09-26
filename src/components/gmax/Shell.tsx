@@ -12,6 +12,7 @@ import { NowPlaying } from "./NowPlaying";
 import { SettingsView } from "./SettingsView";
 import { PlaylistView } from "./PlaylistView";
 import { AddToPlaylist } from "./AddToPlaylist";
+import { SubscriptionModal } from "./SubscriptionModal";
 
 const TABS: { id: TabId; label: string; Icon: typeof HomeIcon }[] = [
   { id: "home", label: "Home", Icon: HomeIcon },
@@ -63,6 +64,7 @@ export function Shell() {
       {overlay === "nowplaying" ? <NowPlaying /> : null}
       {overlay === "settings" ? <SettingsView /> : null}
       {overlay === "playlist" ? <PlaylistView /> : null}
+      {overlay === "premium" ? <SubscriptionModal /> : null}
       <AddToPlaylist />
     </div>
   );

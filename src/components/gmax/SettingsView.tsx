@@ -11,13 +11,16 @@ import {
   ListMusic,
   Waves,
   Gamepad2,
+  Crown,
 } from "lucide-react";
 import { APP_NAME, APP_VERSION } from "@/lib/gmax/catalog";
 import type { AudioQuality, Gender, ThemeMode } from "@/lib/gmax/types";
 import { DEFAULT_PREFS } from "@/lib/gmax/types";
 import { useLibrary } from "@/store/library";
 import { useUi } from "@/store/ui";
+import { usePremium } from "@/store/premium";
 import { MazeGame } from "./MazeGame";
+import { useEffect } from "react";
 
 const GENDERS: { value: Gender; label: string }[] = [
   { value: "male", label: "Male" },
@@ -106,9 +109,15 @@ export function SettingsView() {
     saveProfile({ prefs: { ...prefs, [key]: value } });
   };
   const closeOverlay = useUi((s) => s.closeOverlay);
+  const openPremium = useUi((s) => s.openPremium);
+  const premium = usePremium();
   const [panel, setPanel] = useState<"main" | "accent" | "theme" | "lang" | "quality" | "game">("main");
   const [name, setName] = useState(profile?.name ?? "");
   const [gender, setGender] = useState<Gender>(profile?.gender ?? "unspecified");
+
+  useEffect(() => {
+    if (!premium.hydrated) premium.hydrate();
+  }, [premium]);
 
   const commitProfile = () => {
     saveProfile({ name: name.trim() || "Listener", gender });
@@ -177,6 +186,24 @@ export function SettingsView() {
                     </button>
                   ))}
                 </div>
+              </div>
+            </section>
+
+            <section className="mb-6">
+              <h2 className="mb-2 px-1 text-xs font-semibold uppercase tracking-wide text-muted">
+                Premium
+              </h2>
+              <div className="overflow-hidden rounded-2xl bg-raised">
+                <Row
+                  icon={Crown}
+                  title={premium.active ? "GMAX Premium · Active" : "GMAX Premium"}
+                  subtitle={
+                    premium.active && premium.expiresAt
+                      ? `Valid till ${new Date(premium.expiresAt).toLocaleDateString()}`
+                      : "₹29/mo · HQ · playlists · ad-free"
+                  }
+                  onClick={() => openPremium()}
+                />
               </div>
             </section>
 
