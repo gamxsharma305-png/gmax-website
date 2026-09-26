@@ -1,331 +1,549 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, Droplets, RotateCcw, Trophy } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft, Heart, RotateCcw, Trophy, Volume2, VolumeX } from "lucide-react";
 
-/** 0=up 1=right 2=down 3=left */
-type Dir = 0 | 1 | 2 | 3;
-type Cell = Dir | null;
+/**
+ * Arrow Puzzle Max — tap an arrow to slide it off the board if its path is clear.
+ * Dense polyline arrows (like reference Brain Teaser / Infinite Levels screens).
+ * Music continues in the background via the main player.
+ */
 
-type Level = {
+type Dir = "up" | "down" | "left" | "right";
+
+type Arrow = {
   id: number;
-  size: number;
-  grid: Cell[];
-  start: number;
-  goal: number;
-  hard?: boolean;
+  pts: [number, number][];
+  dir: Dir;
+  cells: string[];
+  escaped: boolean;
 };
 
-const DR = [-1, 0, 1, 0];
-const DC = [0, 1, 0, -1];
+const CELL = 18;
+const COLS = 16;
+const ROWS = 20;
 
-function idx(r: number, c: number, size: number) {
-  return r * size + c;
-}
+const DIRS: Record<Dir, { dx: number; dy: number }> = {
+  right: { dx: 1, dy: 0 },
+  left: { dx: -1, dy: 0 },
+  down: { dx: 0, dy: 1 },
+  up: { dx: 0, dy: -1 },
+};
 
-function rotate(d: Dir): Dir {
-  return ((d + 1) % 4) as Dir;
-}
+const ROT_DIRS: Dir[] = ["right", "down", "left", "up"];
 
-function trace(grid: Cell[], size: number, start: number, goal: number, maxSteps = 80): number[] | null {
-  const path: number[] = [start];
-  let cur = start;
-  const seen = new Set<number>([start]);
-  for (let step = 0; step < maxSteps; step++) {
-    if (cur === goal) return path;
-    const d = grid[cur];
-    if (d == null) return null;
-    const r = Math.floor(cur / size);
-    const c = cur % size;
-    const nr = r + DR[d];
-    const nc = c + DC[d];
-    if (nr < 0 || nc < 0 || nr >= size || nc >= size) return null;
-    const next = idx(nr, nc, size);
-    if (seen.has(next)) return null;
-    seen.add(next);
-    path.push(next);
-    cur = next;
-  }
-  return cur === goal ? path : null;
-}
+const STORAGE_KEY = "gmax.arrowpuzzle.level";
+const SOUND_KEY = "gmax.arrowpuzzle.sound";
 
-function pathLevel(
-  id: number,
-  size: number,
-  pathCells: [number, number][],
-  scramble: number[],
-  hard = false,
-): Level {
-  const grid: Cell[] = Array(size * size).fill(null);
-  for (let i = 0; i < pathCells.length - 1; i++) {
-    const [r, c] = pathCells[i]!;
-    const [r2, c2] = pathCells[i + 1]!;
-    let d: Dir = 1;
-    if (r2 < r) d = 0;
-    else if (c2 > c) d = 1;
-    else if (r2 > r) d = 2;
-    else d = 3;
-    grid[idx(r, c, size)] = d;
-  }
-  const last = pathCells[pathCells.length - 1]!;
-  grid[idx(last[0], last[1], size)] = 1;
-  for (const pi of scramble) {
-    const cell = pathCells[pi];
-    if (!cell) continue;
-    const i = idx(cell[0], cell[1], size);
-    const cur = grid[i];
-    if (cur != null) grid[i] = rotate(rotate(cur));
-  }
-  for (let i = 0; i < grid.length; i++) {
-    if (grid[i] == null && (i * 7 + id) % 5 > 2) {
-      grid[i] = ((i + id) % 4) as Dir;
-    }
-  }
-  const start = idx(pathCells[0]![0], pathCells[0]![1], size);
-  const goal = idx(last[0], last[1], size);
-  return { id, size, grid, start, goal, hard };
-}
-
-function buildLevels(): Level[] {
-  const levels: Level[] = [];
-  levels.push(pathLevel(1, 3, [[1, 0], [1, 1], [1, 2]], [1]));
-  levels.push(pathLevel(2, 3, [[0, 0], [0, 1], [1, 1], [2, 1], [2, 2]], [2]));
-  levels.push(pathLevel(3, 3, [[0, 1], [1, 1], [1, 2], [2, 2], [2, 1], [2, 0]], [1, 3]));
-  levels.push(pathLevel(4, 4, [[0, 0], [0, 1], [0, 2], [1, 2], [2, 2], [2, 3], [3, 3]], [2, 4]));
-  levels.push(pathLevel(5, 4, [[1, 0], [1, 1], [1, 2], [1, 3], [2, 3], [3, 3], [3, 2], [3, 1]], [1, 3, 5], true));
-  levels.push(pathLevel(6, 4, [[0, 3], [0, 2], [0, 1], [1, 1], [2, 1], [2, 2], [3, 2], [3, 3]], [0, 2, 4]));
-  levels.push(pathLevel(7, 5, [[0, 0], [0, 1], [1, 1], [2, 1], [2, 2], [2, 3], [3, 3], [4, 3], [4, 4]], [1, 3, 5]));
-  levels.push(pathLevel(8, 5, [[2, 0], [2, 1], [1, 1], [0, 1], [0, 2], [0, 3], [1, 3], [2, 3], [2, 4], [3, 4], [4, 4]], [2, 4, 6], true));
-  levels.push(pathLevel(9, 5, [[4, 0], [3, 0], [2, 0], [1, 0], [1, 1], [1, 2], [1, 3], [2, 3], [3, 3], [3, 4], [4, 4]], [1, 3, 5, 7]));
-  levels.push(pathLevel(10, 5, [[0, 2], [1, 2], [2, 2], [2, 1], [2, 0], [3, 0], [4, 0], [4, 1], [4, 2], [4, 3], [4, 4]], [0, 2, 4, 6], true));
-  for (let n = 11; n <= 20; n++) {
-    const size = n <= 14 ? 5 : 6;
-    const path: [number, number][] = [];
-    let r = 0;
-    let c = 0;
-    path.push([r, c]);
-    const steps = size * 2 + (n % 3);
-    for (let s = 0; s < steps; s++) {
-      if (s % 2 === 0) c = Math.min(size - 1, c + 1);
-      else r = Math.min(size - 1, r + 1);
-      if (path[path.length - 1]![0] !== r || path[path.length - 1]![1] !== c) path.push([r, c]);
-    }
-    while (r < size - 1 || c < size - 1) {
-      if (c < size - 1) c++;
-      else r++;
-      path.push([r, c]);
-    }
-    const scramble = path
-      .map((_, i) => i)
-      .filter((i) => i > 0 && i < path.length - 1 && (i + n) % 3 === 0)
-      .slice(0, 4 + (n % 3));
-    levels.push(pathLevel(n, size, path, scramble, n >= 15));
-  }
-  return levels;
-}
-
-const LEVELS = buildLevels();
-const STORAGE_KEY = "gmax.maze.progress";
-
-function loadProgress(): { level: number; best: number } {
+function loadLevel(): number {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { level: 1, best: 1 };
-    const p = JSON.parse(raw) as { level?: number; best?: number };
-    return { level: Math.max(1, p.level || 1), best: Math.max(1, p.best || 1) };
+    return Math.max(1, parseInt(localStorage.getItem(STORAGE_KEY) || "1", 10) || 1);
   } catch {
-    return { level: 1, best: 1 };
+    return 1;
   }
 }
 
-function saveProgress(level: number, best: number) {
+function saveLevel(n: number) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ level, best }));
+    localStorage.setItem(STORAGE_KEY, String(n));
   } catch {
-    /* ignore */
+    /* */
   }
 }
 
-function ArrowIcon({ dir, active, size = 22 }: { dir: Dir; active?: boolean; size?: number }) {
-  const rot = dir * 90;
+function loadSound(): boolean {
+  try {
+    return localStorage.getItem(SOUND_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function cellsOf(pts: [number, number][]): string[] {
+  const cells: string[] = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i]!;
+    const [x2, y2] = pts[i + 1]!;
+    if (x1 === x2) {
+      for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) cells.push(`${x1},${y}`);
+    } else {
+      for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) cells.push(`${x},${y1}`);
+    }
+  }
+  return [...new Set(cells)];
+}
+
+function isNearOccupied(cell: string, occupied: Set<string>): boolean {
+  if (occupied.has(cell)) return true;
+  const [cx, cy] = cell.split(",").map(Number);
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      style={{ transform: `rotate(${rot}deg)`, transition: "transform 0.18s ease" }}
-      className={active ? "text-accent" : "text-fg"}
-    >
-      <path
-        d="M12 4v14M12 4l-5 5M12 4l5 5"
-        stroke="currentColor"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    occupied.has(`${cx! + 1},${cy}`) ||
+    occupied.has(`${cx! - 1},${cy}`) ||
+    occupied.has(`${cx},${cy! + 1}`) ||
+    occupied.has(`${cx},${cy! - 1}`)
   );
+}
+
+const SPIRAL_TEMPLATES: [number, number][][] = [
+  [
+    [0, 2],
+    [1, 2],
+    [2, 1],
+    [3, 1],
+  ],
+  [
+    [0, 3],
+    [1, 2],
+    [2, 2],
+    [3, 1],
+  ],
+  [
+    [0, 2],
+    [1, 3],
+    [2, 2],
+    [3, 2],
+    [0, 1],
+  ],
+];
+
+function tryWalk(
+  x: number,
+  y: number,
+  steps: [number, number][],
+  occupied: Set<string>,
+  cells: string[],
+  pts: [number, number][],
+): { x: number; y: number; lastDir: Dir } | null {
+  for (const [dirIdx, len] of steps) {
+    const dir = ROT_DIRS[dirIdx]!;
+    const { dx, dy } = DIRS[dir];
+    const nx = x + dx * len;
+    const ny = y + dy * len;
+    if (nx < 0 || nx > COLS || ny < 0 || ny > ROWS) return null;
+    const segCells: string[] = [];
+    for (let i = 1; i <= len; i++) segCells.push(`${x + dx * i},${y + dy * i}`);
+    if (segCells.some((c) => isNearOccupied(c, occupied) || cells.includes(c))) return null;
+    cells.push(...segCells);
+    x = nx;
+    y = ny;
+    pts.push([x, y]);
+  }
+  return { x, y, lastDir: ROT_DIRS[steps[steps.length - 1]![0]]! };
+}
+
+function buildArrow(
+  occupied: Set<string>,
+  segRange: [number, number],
+  lenRange: [number, number],
+  allowSpiral: boolean,
+): Omit<Arrow, "id" | "escaped"> | null {
+  const dirKeys = Object.keys(DIRS) as Dir[];
+  for (let tries = 0; tries < 50; tries++) {
+    let x = Math.floor(Math.random() * (COLS + 1));
+    let y = Math.floor(Math.random() * (ROWS + 1));
+    const pts: [number, number][] = [[x, y]];
+    const cells: string[] = [];
+    let lastDir: Dir | null = null;
+
+    if (allowSpiral && Math.random() < 0.35) {
+      const rot = Math.floor(Math.random() * 4);
+      const tpl = SPIRAL_TEMPLATES[Math.floor(Math.random() * SPIRAL_TEMPLATES.length)]!.map(
+        ([d, l]) => [(d! + rot) % 4, l!] as [number, number],
+      );
+      const res = tryWalk(x, y, tpl, occupied, cells, pts);
+      if (!res) continue;
+      x = res.x;
+      y = res.y;
+      lastDir = res.lastDir;
+    }
+
+    const segs = segRange[0] + Math.floor(Math.random() * (segRange[1] - segRange[0] + 1));
+    let dir: Dir | null = lastDir;
+    let ok = true;
+    for (let s = 0; s < segs; s++) {
+      const choices = dirKeys.filter(
+        (k) =>
+          !lastDir ||
+          DIRS[k].dx !== -DIRS[lastDir].dx ||
+          DIRS[k].dy !== -DIRS[lastDir].dy,
+      );
+      dir = choices[Math.floor(Math.random() * choices.length)]!;
+      const { dx, dy } = DIRS[dir];
+      const len = lenRange[0] + Math.floor(Math.random() * (lenRange[1] - lenRange[0] + 1));
+      const nx = x + dx * len;
+      const ny = y + dy * len;
+      if (nx < 0 || nx > COLS || ny < 0 || ny > ROWS) {
+        ok = false;
+        break;
+      }
+      const segCells: string[] = [];
+      for (let i = 1; i <= len; i++) segCells.push(`${x + dx * i},${y + dy * i}`);
+      if (segCells.some((c) => isNearOccupied(c, occupied) || cells.includes(c))) {
+        ok = false;
+        break;
+      }
+      cells.push(...segCells);
+      x = nx;
+      y = ny;
+      pts.push([x, y]);
+      lastDir = dir;
+    }
+    if (!ok || !dir || pts.length < 2) continue;
+
+    // Must have a clear escape ray from tip (solvable bias)
+    const { dx, dy } = DIRS[dir];
+    let cx = x + dx;
+    let cy = y + dy;
+    let blocked = false;
+    while (cx >= 0 && cx <= COLS && cy >= 0 && cy <= ROWS) {
+      if (occupied.has(`${cx},${cy}`)) {
+        blocked = true;
+        break;
+      }
+      cx += dx;
+      cy += dy;
+    }
+    if (blocked) continue;
+
+    return { pts, dir, cells: [...new Set(cells)] };
+  }
+  return null;
+}
+
+function generateLevel(levelNum: number): Arrow[] {
+  const maxSegs = Math.min(3 + Math.floor(levelNum / 3), 7);
+  const maxLen = levelNum > 8 ? 3 : 2;
+  const placed: Arrow[] = [];
+  const occupied = new Set<string>();
+
+  const place = (
+    segRange: [number, number],
+    lenRange: [number, number],
+    tries: number,
+    allowSpiral: boolean,
+  ) => {
+    for (let a = 0; a < tries; a++) {
+      const arrow = buildArrow(occupied, segRange, lenRange, allowSpiral);
+      if (!arrow) continue;
+      const id = placed.length + 1;
+      arrow.cells.forEach((c) => occupied.add(c));
+      placed.push({ ...arrow, id, escaped: false });
+    }
+  };
+
+  // Dense pass — reference screens are packed
+  place([2, maxSegs], [1, maxLen], 8000, true);
+  place([1, 2], [1, 2], 5000, false);
+  place([1, 1], [1, 1], 3000, false);
+
+  // Ensure at least a few arrows
+  if (placed.length < 6) {
+    place([1, 2], [1, 2], 4000, true);
+  }
+
+  return placed;
+}
+
+// —— Audio (does not touch main music player) ——
+let audioCtx: AudioContext | null = null;
+
+function playSfx(type: "escape" | "bump" | "win", enabled: boolean) {
+  if (!enabled || typeof window === "undefined") return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    if (audioCtx.state === "suspended") void audioCtx.resume();
+    const now = audioCtx.currentTime;
+    if (type === "escape") {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(420, now);
+      osc.frequency.exponentialRampToValueAtTime(1100, now + 0.3);
+      gain.gain.setValueAtTime(0.22, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.32);
+      osc.start(now);
+      osc.stop(now + 0.32);
+    } else if (type === "bump") {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(180, now);
+      osc.frequency.linearRampToValueAtTime(90, now + 0.12);
+      gain.gain.setValueAtTime(0.28, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+      osc.start(now);
+      osc.stop(now + 0.12);
+    } else {
+      [523, 659, 784].forEach((f, i) => {
+        const o = audioCtx!.createOscillator();
+        const g = audioCtx!.createGain();
+        o.connect(g);
+        g.connect(audioCtx!.destination);
+        o.type = "sine";
+        o.frequency.setValueAtTime(f, now + i * 0.09);
+        g.gain.setValueAtTime(0.18, now + i * 0.09);
+        g.gain.exponentialRampToValueAtTime(0.01, now + i * 0.09 + 0.25);
+        o.start(now + i * 0.09);
+        o.stop(now + i * 0.09 + 0.25);
+      });
+    }
+  } catch {
+    /* */
+  }
+}
+
+function checkCollision(arrow: Arrow, state: Arrow[]): boolean {
+  const [hX, hY] = arrow.pts[arrow.pts.length - 1]!;
+  const { dx, dy } = DIRS[arrow.dir];
+  let cx = hX + dx;
+  let cy = hY + dy;
+  while (cx >= 0 && cx <= COLS && cy >= 0 && cy <= ROWS) {
+    const key = `${cx},${cy}`;
+    for (const other of state) {
+      if (!other.escaped && other.id !== arrow.id && other.cells.includes(key)) return true;
+    }
+    cx += dx;
+    cy += dy;
+  }
+  return false;
 }
 
 type Props = { onBack: () => void };
 
 export function MazeGame({ onBack }: Props) {
-  const [progress, setProgress] = useState(loadProgress);
-  const [levelId, setLevelId] = useState(progress.level);
-  const level = LEVELS[Math.min(LEVELS.length, Math.max(1, levelId)) - 1]!;
-  const [grid, setGrid] = useState<Cell[]>(() => [...level.grid]);
-  const [lives, setLives] = useState(3);
-  const [path, setPath] = useState<number[] | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [screen, setScreen] = useState<"play" | "win" | "dead">("play");
+  const [level, setLevel] = useState(loadLevel);
+  const [arrows, setArrows] = useState<Arrow[]>(() => generateLevel(loadLevel()));
+  const [mistakes, setMistakes] = useState(0);
+  const [animating, setAnimating] = useState(false);
+  const [won, setWon] = useState(false);
+  const [soundOn, setSoundOn] = useState(loadSound);
+  const [bumpId, setBumpId] = useState<number | null>(null);
+  const [escapingId, setEscapingId] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
 
-  const resetLevel = useCallback((id: number) => {
-    const L = LEVELS[Math.min(LEVELS.length, Math.max(1, id)) - 1]!;
-    setLevelId(L.id);
-    setGrid([...L.grid]);
-    setLives(3);
-    setPath(null);
-    setChecking(false);
-    setScreen("play");
+  const rebuild = useCallback((lv: number) => {
+    setLevel(lv);
+    setArrows(generateLevel(lv));
+    setMistakes(0);
+    setWon(false);
+    setAnimating(false);
+    setBumpId(null);
+    setEscapingId(null);
   }, []);
 
   useEffect(() => {
-    resetLevel(levelId);
+    rebuild(level);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const onTap = (i: number) => {
-    if (screen !== "play" || checking) return;
-    const cell = grid[i];
-    if (cell == null) return;
-    setGrid((g) => {
-      const next = [...g];
-      next[i] = rotate(cell);
-      return next;
-    });
-    setPath(null);
-  };
+  const handleTap = (arrow: Arrow) => {
+    if (arrow.escaped || animating || won) return;
+    const blocked = checkCollision(arrow, arrows);
+    setAnimating(true);
 
-  const check = () => {
-    if (checking) return;
-    setChecking(true);
-    const p = trace(grid, level.size, level.start, level.goal);
-    if (p) {
-      setPath(p);
-      setScreen("win");
-      const nextBest = Math.max(progress.best, level.id + 1);
-      const nextLevel = Math.min(LEVELS.length, level.id + 1);
-      setProgress({ level: nextLevel, best: nextBest });
-      saveProgress(nextLevel, nextBest);
-    } else {
-      setLives((v) => {
-        const n = v - 1;
-        if (n <= 0) setScreen("dead");
-        return n;
-      });
-      setTimeout(() => setChecking(false), 280);
+    if (blocked) {
+      playSfx("bump", soundOn);
+      const nextMistakes = mistakes + 1;
+      setMistakes(nextMistakes);
+      setBumpId(arrow.id);
+      window.setTimeout(() => {
+        setBumpId(null);
+        setAnimating(false);
+        if (nextMistakes >= 3) {
+          window.setTimeout(() => rebuild(level), 300);
+        }
+      }, 320);
       return;
     }
-    setChecking(false);
+
+    playSfx("escape", soundOn);
+    setEscapingId(arrow.id);
+    window.setTimeout(() => {
+      setArrows((prev) => {
+        const next = prev.map((a) => (a.id === arrow.id ? { ...a, escaped: true } : a));
+        if (next.every((a) => a.escaped)) {
+          playSfx("win", soundOn);
+          setWon(true);
+          const nextLv = level + 1;
+          saveLevel(nextLv);
+        }
+        return next;
+      });
+      setEscapingId(null);
+      setAnimating(false);
+    }, 480);
   };
 
-  const pathSet = useMemo(() => new Set(path || []), [path]);
+  const nextLevel = () => {
+    const next = level + 1;
+    saveLevel(next);
+    rebuild(next);
+  };
+
+  const toggleSound = () => {
+    const v = !soundOn;
+    setSoundOn(v);
+    try {
+      localStorage.setItem(SOUND_KEY, v ? "1" : "0");
+    } catch {
+      /* */
+    }
+  };
+
+  const vbW = COLS * CELL;
+  const vbH = ROWS * CELL;
 
   return (
     <div className="absolute inset-0 z-50 flex flex-col bg-bg text-fg">
       <header className="flex items-center gap-2 border-b border-hairline px-3 py-3 pt-[calc(12px+env(safe-area-inset-top))]">
-        <button type="button" onClick={onBack} className="grid size-9 place-items-center rounded-full bg-lift" aria-label="Back">
+        <button
+          type="button"
+          onClick={onBack}
+          className="grid size-9 place-items-center rounded-full bg-lift"
+          aria-label="Back"
+        >
           <ChevronLeft size={20} />
         </button>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold">
-            Level {level.id}
-            {level.hard ? <span className="ml-2 text-[10px] text-accent">HARD</span> : null}
-          </p>
-          <p className="text-[11px] text-muted">Tap arrows to rotate · path start → end</p>
+          <p className="text-sm font-semibold">Arrow Puzzle</p>
+          <p className="text-[11px] text-muted">Level {level} · Escape every arrow</p>
         </div>
         <div className="flex items-center gap-1 text-accent">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Droplets key={i} size={16} className={i < lives ? "opacity-100" : "opacity-25"} fill={i < lives ? "currentColor" : "none"} />
+            <Heart
+              key={i}
+              size={16}
+              className={i < 3 - mistakes ? "opacity-100" : "opacity-25"}
+              fill={i < 3 - mistakes ? "currentColor" : "none"}
+            />
           ))}
         </div>
+        <button
+          type="button"
+          onClick={toggleSound}
+          className="grid size-9 place-items-center rounded-full bg-lift text-muted"
+          aria-label="Toggle sound"
+        >
+          {soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}
+        </button>
+        <button
+          type="button"
+          onClick={() => rebuild(level)}
+          className="grid size-9 place-items-center rounded-full bg-lift"
+          aria-label="Reset"
+        >
+          <RotateCcw size={16} />
+        </button>
       </header>
 
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 px-4 pb-8">
-        {screen === "play" ? (
-          <>
-            <div
-              className="grid gap-1.5 rounded-2xl border border-line bg-raised p-3"
-              style={{ gridTemplateColumns: `repeat(${level.size}, minmax(0, 1fr))`, width: "min(92vw, 340px)" }}
-            >
-              {grid.map((cell, i) => {
-                const isStart = i === level.start;
-                const isGoal = i === level.goal;
-                const onPath = pathSet.has(i);
+      <div className="relative flex flex-1 flex-col items-center justify-center px-2 pb-[calc(16px+env(safe-area-inset-bottom))]">
+        <p className="mb-2 text-[12px] font-semibold tracking-wide text-muted">LEVEL {level}</p>
+
+        <div
+          className="relative w-full max-w-[380px] overflow-hidden rounded-xl border border-line bg-raised"
+          style={{
+            height: "min(68vh, 460px)",
+            backgroundImage: "radial-gradient(var(--color-line, #333) 1.2px, transparent 1.2px)",
+            backgroundSize: "16px 16px",
+          }}
+        >
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${vbW} ${vbH}`}
+            preserveAspectRatio="xMidYMid meet"
+            className="h-full w-full"
+          >
+            {arrows
+              .filter((a) => !a.escaped || escapingId === a.id)
+              .map((arrow) => {
+                const isBump = bumpId === arrow.id;
+                const isEsc = escapingId === arrow.id;
+                const { dx, dy } = DIRS[arrow.dir];
+                let d = `M ${arrow.pts[0]![0] * CELL} ${arrow.pts[0]![1] * CELL}`;
+                for (let i = 1; i < arrow.pts.length; i++) {
+                  d += ` L ${arrow.pts[i]![0] * CELL} ${arrow.pts[i]![1] * CELL}`;
+                }
+                const tip = arrow.pts[arrow.pts.length - 1]!;
+                const tx = tip[0] * CELL;
+                const ty = tip[1] * CELL;
+                const sz = 5;
+                let tipD = "";
+                if (arrow.dir === "up") tipD = `M ${tx - sz} ${ty + sz} L ${tx} ${ty} L ${tx + sz} ${ty + sz}`;
+                if (arrow.dir === "down") tipD = `M ${tx - sz} ${ty - sz} L ${tx} ${ty} L ${tx + sz} ${ty - sz}`;
+                if (arrow.dir === "left") tipD = `M ${tx + sz} ${ty - sz} L ${tx} ${ty} L ${tx + sz} ${ty + sz}`;
+                if (arrow.dir === "right") tipD = `M ${tx - sz} ${ty - sz} L ${tx} ${ty} L ${tx - sz} ${ty + sz}`;
+
                 return (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => onTap(i)}
-                    disabled={cell == null}
-                    className={`aspect-square grid place-items-center rounded-lg transition-colors ${
-                      cell == null
-                        ? "bg-transparent"
-                        : onPath
-                          ? "bg-accent/25"
-                          : isStart
-                            ? "bg-fg/15 ring-1 ring-fg/40"
-                            : isGoal
-                              ? "bg-accent/20 ring-1 ring-accent/50"
-                              : "bg-lift active:bg-fg/10"
-                    }`}
+                  <g
+                    key={arrow.id}
+                    onClick={() => handleTap(arrow)}
+                    style={{
+                      cursor: "pointer",
+                      transition: isBump
+                        ? "transform 0.14s ease-out"
+                        : isEsc
+                          ? "opacity 0.45s ease, transform 0.45s ease"
+                          : "transform 0.2s ease",
+                      transform: isBump
+                        ? `translate(${dx * 14}px, ${dy * 14}px)`
+                        : isEsc
+                          ? `translate(${dx * 40}px, ${dy * 40}px)`
+                          : undefined,
+                      opacity: isEsc ? 0 : 1,
+                    }}
                   >
-                    {cell != null ? <ArrowIcon dir={cell} active={onPath || isStart} /> : null}
-                  </button>
+                    <path d={d} fill="none" stroke="transparent" strokeWidth={14} />
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={3.2}
+                      strokeLinecap="square"
+                      strokeLinejoin="miter"
+                      className="text-fg"
+                    />
+                    <path
+                      d={tipD}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={3.2}
+                      strokeLinecap="square"
+                      strokeLinejoin="miter"
+                      className="text-fg"
+                    />
+                  </g>
                 );
               })}
-            </div>
-            <p className="text-center text-[12px] text-muted">Start ringed · Goal tinted · Music keeps playing</p>
-            <div className="flex gap-3">
-              <button type="button" onClick={() => resetLevel(level.id)} className="flex h-11 items-center gap-2 rounded-full border border-line bg-raised px-4 text-sm">
-                <RotateCcw size={16} /> Reset
-              </button>
-              <button type="button" onClick={check} className="h-11 rounded-full bg-accent px-6 text-sm font-semibold text-bg">
-                Check path
-              </button>
-            </div>
-          </>
-        ) : null}
+          </svg>
 
-        {screen === "win" ? (
-          <div className="w-full max-w-sm rounded-2xl border border-line bg-raised p-6 text-center">
-            <Trophy className="mx-auto mb-2 text-accent" size={36} />
-            <p className="text-xl font-semibold">Flawless!</p>
-            <p className="mt-1 text-sm text-muted">Level {level.id} cleared</p>
-            <button
-              type="button"
-              onClick={() => resetLevel(Math.min(LEVELS.length, level.id + 1))}
-              className="mt-5 h-12 w-full rounded-full bg-accent text-sm font-semibold text-bg"
-            >
-              {level.id >= LEVELS.length ? "Replay last" : "Next Level"}
-            </button>
-            <button type="button" onClick={onBack} className="mt-3 text-sm text-muted">
-              Back to Settings
-            </button>
-          </div>
-        ) : null}
+          {won ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-bg/70 p-4 backdrop-blur-sm">
+              <div className="w-full max-w-xs rounded-2xl border border-line bg-raised p-6 text-center shadow-xl">
+                <Trophy className="mx-auto mb-2 text-accent" size={36} />
+                <p className="text-lg font-semibold">
+                  {mistakes === 0 ? "Perfect Clear!" : "Level Cleared!"}
+                </p>
+                <p className="mt-1 text-sm text-muted">Level {level} done · music still playing</p>
+                <button
+                  type="button"
+                  onClick={nextLevel}
+                  className="mt-5 h-12 w-full rounded-full bg-accent text-sm font-semibold text-bg"
+                >
+                  NEXT LEVEL
+                </button>
+                <button type="button" onClick={onBack} className="mt-3 text-sm text-muted">
+                  Back to Settings
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
 
-        {screen === "dead" ? (
-          <div className="w-full max-w-sm rounded-2xl border border-line bg-raised p-6 text-center">
-            <p className="text-xl font-semibold">Out of lives</p>
-            <p className="mt-1 text-sm text-muted">Song still playing — try again</p>
-            <button type="button" onClick={() => resetLevel(level.id)} className="mt-5 h-12 w-full rounded-full bg-accent text-sm font-semibold text-bg">
-              Retry
-            </button>
-            <button type="button" onClick={onBack} className="mt-3 text-sm text-muted">
-              Back to Settings
-            </button>
-          </div>
-        ) : null}
+        <p className="mt-3 max-w-sm text-center text-[11px] text-muted">
+          Tap an arrow — if the path ahead is clear it escapes. Clear all arrows. 3 bumps = retry.
+        </p>
       </div>
     </div>
   );

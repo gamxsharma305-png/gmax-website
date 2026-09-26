@@ -187,8 +187,8 @@ export function SettingsView() {
               <div className="overflow-hidden rounded-2xl bg-raised">
                 <Row
                   icon={Gamepad2}
-                  title="Arrow Maze"
-                  subtitle="20 levels · music keeps playing"
+                  title="Arrow Puzzle"
+                  subtitle="Escape arrows · infinite levels · music keeps playing"
                   onClick={() => setPanel("game")}
                 />
               </div>
