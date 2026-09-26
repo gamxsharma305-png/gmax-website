@@ -1,8 +1,8 @@
 import { Innertube, UniversalCache } from 'youtubei.js';
 
 /**
- * Warm-instance singleton — avoids re-creating Innertube on every invoke.
- * Vercel may still cold-start; generate_session_locally reduces shared-IP issues.
+ * Warm-instance singleton — reuses Innertube across warm serverless invokes.
+ * Do NOT use generate_session_locally: true — YouTube rejects random visitor tokens (400).
  */
 let youtubeClient = null;
 let clientPromise = null;
@@ -13,7 +13,8 @@ async function getYouTubeClient() {
 
   clientPromise = Innertube.create({
     cache: new UniversalCache(false),
-    generate_session_locally: true,
+    generate_session_locally: false,
+    enable_session_cache: false,
   })
     .then((client) => {
       youtubeClient = client;
@@ -30,7 +31,6 @@ async function getYouTubeClient() {
 function pickThumbnail(basicInfo) {
   const thumbs = basicInfo?.thumbnail;
   if (!Array.isArray(thumbs) || !thumbs.length) return '';
-  // Prefer larger images for mediaSession artwork
   const sorted = [...thumbs].sort(
     (a, b) => (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0),
   );
@@ -38,12 +38,32 @@ function pickThumbnail(basicInfo) {
   return typeof url === 'string' ? url : '';
 }
 
+async function resolveAudioUrl(format, player) {
+  if (!format) return null;
+  // Prefer plain URL when already present (mobile clients often skip cipher)
+  if (format.url && typeof format.url === 'string' && format.url.startsWith('http')) {
+    return format.url;
+  }
+  if (!player) return null;
+  try {
+    let url = format.decipher(player);
+    if (url && typeof url.then === 'function') url = await url;
+    if (url && typeof url === 'string') return url;
+  } catch {
+    /* cipher failed */
+  }
+  return null;
+}
+
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=600');
+  res.setHeader('Cache-Control', 'public, s-maxage=180, stale-while-revalidate=300');
 }
+
+/** Try multiple InnerTube clients — mobile often returns playable audio URLs. */
+const CLIENTS = ['IOS', 'ANDROID', 'WEB'];
 
 export default async function handler(req, res) {
   setCors(res);
@@ -70,9 +90,29 @@ export default async function handler(req, res) {
 
   try {
     const yt = await getYouTubeClient();
-    const info = await yt.getBasicInfo(videoId);
 
-    // Age-restricted / unplayable
+    let info = null;
+    let lastError = null;
+
+    for (const client of CLIENTS) {
+      try {
+        info = await yt.getBasicInfo(videoId, client);
+        if (info) break;
+      } catch (err) {
+        lastError = err;
+        info = null;
+      }
+    }
+
+    if (!info) {
+      const msg = lastError?.message || 'Failed to load video info';
+      const lower = msg.toLowerCase();
+      if (lower.includes('not found') || lower.includes('unavailable')) {
+        return res.status(404).json({ success: false, error: msg });
+      }
+      return res.status(500).json({ success: false, error: msg });
+    }
+
     if (info.playability_status?.status && info.playability_status.status !== 'OK') {
       const reason =
         info.playability_status.reason ||
@@ -82,20 +122,19 @@ export default async function handler(req, res) {
         /age|restrict/i.test(String(reason)) || info.basic_info?.is_age_restricted
           ? 403
           : 404;
-      return res.status(code).json({
-        success: false,
-        error: reason,
-      });
+      return res.status(code).json({ success: false, error: reason });
     }
 
-    let audioFormat;
+    let audioFormat = null;
     try {
-      audioFormat = info.chooseFormat({
-        type: 'audio',
-        quality: 'best',
-      });
+      audioFormat = info.chooseFormat({ type: 'audio', quality: 'best' });
     } catch {
-      audioFormat = null;
+      // Fallback: first adaptive audio format
+      const adaptive = info.streaming_data?.adaptive_formats || [];
+      audioFormat =
+        adaptive.find((f) => f.has_audio && !f.has_video) ||
+        adaptive.find((f) => String(f.mime_type || '').startsWith('audio/')) ||
+        null;
     }
 
     if (!audioFormat) {
@@ -105,16 +144,12 @@ export default async function handler(req, res) {
       });
     }
 
-    // decipher may be sync or async depending on youtubei.js version
-    let audioUrl = audioFormat.decipher(yt.session.player);
-    if (audioUrl && typeof audioUrl.then === 'function') {
-      audioUrl = await audioUrl;
-    }
+    const audioUrl = await resolveAudioUrl(audioFormat, yt.session.player);
 
-    if (!audioUrl || typeof audioUrl !== 'string') {
+    if (!audioUrl) {
       return res.status(500).json({
         success: false,
-        error: 'Failed to decipher audio stream URL.',
+        error: 'Failed to resolve audio stream URL (cipher/decipher).',
       });
     }
 
@@ -128,7 +163,7 @@ export default async function handler(req, res) {
         artist: basic.author || 'Unknown Artist',
         thumbnail: pickThumbnail(basic),
         duration: Number(basic.duration) || 0,
-        mimeType: audioFormat.mime_type || 'audio/webm',
+        mimeType: audioFormat.mime_type || 'audio/mp4',
         videoId,
       },
     });
