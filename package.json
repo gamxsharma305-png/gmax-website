@@ -12,6 +12,7 @@
     "lucide-react": "^0.510.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "youtubei.js": "^13.4.0",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
