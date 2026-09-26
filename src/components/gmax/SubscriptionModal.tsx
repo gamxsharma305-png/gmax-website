@@ -2,10 +2,14 @@ import { useEffect, useState } from "react";
 import {
   Check,
   Crown,
+  Headphones,
+  ListMusic,
   Loader2,
+  Radio,
   Shield,
   Sparkles,
   X,
+  Zap,
 } from "lucide-react";
 import {
   PREMIUM_FEATURES,
@@ -32,6 +36,188 @@ function loadRazorpayScript(): Promise<boolean> {
     s.onerror = () => resolve(false);
     document.body.appendChild(s);
   });
+}
+
+type ShowcaseCard = {
+  id: string;
+  title: string;
+  subtitle: string;
+  status: string;
+  statusOn: boolean;
+  gradient: string;
+  Icon: typeof Headphones;
+};
+
+const SHOWCASE: ShowcaseCard[] = [
+  {
+    id: "hq",
+    title: "HQ Audio",
+    subtitle: "Crystal clear streams",
+    status: "Premium",
+    statusOn: true,
+    gradient: "linear-gradient(160deg, #34d399 0%, #059669 45%, #0f172a 100%)",
+    Icon: Headphones,
+  },
+  {
+    id: "playlists",
+    title: "Unlimited lists",
+    subtitle: "Create without limits",
+    status: "Unlocked",
+    statusOn: true,
+    gradient: "linear-gradient(160deg, #a78bfa 0%, #7c3aed 45%, #0f172a 100%)",
+    Icon: ListMusic,
+  },
+  {
+    id: "bg",
+    title: "Background play",
+    subtitle: "Music while you multitask",
+    status: "Active",
+    statusOn: true,
+    gradient: "linear-gradient(160deg, #fbbf24 0%, #ea580c 45%, #0f172a 100%)",
+    Icon: Radio,
+  },
+  {
+    id: "ads",
+    title: "Ad-free 🎵",
+    subtitle: "Zero interruptions",
+    status: "Clean",
+    statusOn: true,
+    gradient: "linear-gradient(160deg, #38bdf8 0%, #2563eb 45%, #0f172a 100%)",
+    Icon: Zap,
+  },
+];
+
+/** Video-style stacked card deck with auto-cycle */
+function AnimatedCardStack() {
+  const n = SHOWCASE.length;
+  const [active, setActive] = useState(0);
+  const [animating, setAnimating] = useState(false);
+
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setAnimating(true);
+      window.setTimeout(() => {
+        setActive((i) => (i + 1) % n);
+        setAnimating(false);
+      }, 380);
+    }, 2600);
+    return () => clearInterval(t);
+  }, [n]);
+
+  // Order: active on top, then next, then rest
+  const order = [0, 1, 2].map((offset) => (active + offset) % n);
+
+  return (
+    <div className="relative mx-auto mt-5 h-[200px] w-full max-w-[300px] select-none">
+      {order.map((cardIndex, stackPos) => {
+        const card = SHOWCASE[cardIndex]!;
+        const Icon = card.Icon;
+        // stackPos 0 = front
+        const isFront = stackPos === 0;
+
+        // Exit animation for outgoing front card
+        let transform = "";
+        let opacity = 1;
+        let z = 30 - stackPos;
+
+        if (isFront && animating) {
+          // slide left + fade like the video
+          transform = "translateX(-72%) translateY(8px) scale(0.92) rotate(-6deg)";
+          opacity = 0;
+          z = 40;
+        } else if (stackPos === 1 && animating) {
+          // second card rises to front
+          transform = "translateX(-50%) translateY(0) scale(1)";
+          z = 35;
+        } else {
+          const y = stackPos * 14;
+          const scale = 1 - stackPos * 0.06;
+          const x = -50 + stackPos * 3;
+          transform = `translateX(${x}%) translateY(${y}px) scale(${scale})`;
+          opacity = 1 - stackPos * 0.08;
+        }
+
+        return (
+          <div
+            key={`${card.id}-${stackPos}-${active}`}
+            className="absolute left-1/2 top-0 w-[78%] overflow-hidden rounded-[20px] border border-white/20 shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
+            style={{
+              height: 168,
+              transform,
+              opacity,
+              zIndex: z,
+              transition:
+                "transform 0.38s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.32s ease",
+              background: card.gradient,
+            }}
+          >
+            {/* Soft grid / shine */}
+            <div
+              className="pointer-events-none absolute inset-0 opacity-30"
+              style={{
+                backgroundImage:
+                  "radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 55%)",
+              }}
+            />
+
+            <div className="relative flex h-full flex-col p-4">
+              <div className="flex items-start justify-between">
+                <span className="grid size-11 place-items-center rounded-2xl bg-white/15 text-white backdrop-blur-sm">
+                  <Icon size={22} />
+                </span>
+                <span className="rounded-full bg-black/25 px-2.5 py-1 text-[10px] font-semibold text-white/90 backdrop-blur-sm">
+                  <span
+                    className="mr-1 inline-block size-1.5 rounded-full"
+                    style={{ background: card.statusOn ? "#4ade80" : "#94a3b8" }}
+                  />
+                  {card.status}
+                </span>
+              </div>
+
+              <div className="mt-auto">
+                <p className="text-[17px] font-bold leading-tight text-white drop-shadow">
+                  {card.title}
+                </p>
+                <p className="mt-0.5 text-[12px] text-white/80">{card.subtitle}</p>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-medium uppercase tracking-wider text-white/60">
+                    GMAX Premium
+                  </span>
+                  <span className="rounded-full bg-white/95 px-3 py-1 text-[11px] font-bold text-slate-900">
+                    Included
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Dots */}
+      <div className="absolute -bottom-1 left-1/2 z-50 flex -translate-x-1/2 gap-1.5">
+        {SHOWCASE.map((c, i) => (
+          <button
+            key={c.id}
+            type="button"
+            aria-label={`Show ${c.title}`}
+            onClick={() => {
+              if (i === active || animating) return;
+              setAnimating(true);
+              window.setTimeout(() => {
+                setActive(i);
+                setAnimating(false);
+              }, 280);
+            }}
+            className="size-1.5 rounded-full transition-all"
+            style={{
+              background: i === active ? "var(--color-accent, #1db954)" : "rgba(255,255,255,0.25)",
+              width: i === active ? 14 : 6,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function SubscriptionModal() {
@@ -158,10 +344,9 @@ export function SubscriptionModal() {
   }
 
   return (
-    <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4">
-      <div className="flex max-h-[92vh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl border border-line bg-bg shadow-2xl sm:rounded-3xl">
-        {/* Header */}
-        <div className="relative shrink-0 bg-gradient-to-b from-accent/20 to-transparent px-5 pb-2 pt-5">
+    <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/75 sm:items-center sm:p-4">
+      <div className="flex max-h-[94vh] w-full max-w-md flex-col overflow-hidden rounded-t-3xl border border-line bg-bg shadow-2xl sm:rounded-3xl">
+        <div className="relative shrink-0 px-5 pb-1 pt-5">
           <button
             type="button"
             onClick={closeOverlay}
@@ -176,41 +361,15 @@ export function SubscriptionModal() {
             </span>
             <div>
               <h2 className="text-lg font-bold">GMAX Premium</h2>
-              <p className="text-[12px] text-muted">Unlock the full experience</p>
+              <p className="text-[12px] text-muted">Cards cycle · pick a plan below</p>
             </div>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 pb-4">
-          {/* Stacked feature cards — inspired by card UI video */}
-          <div className="relative mx-auto mt-4 h-[140px] w-full max-w-[280px]">
-            {[
-              "from-violet-500/80 to-purple-700/60",
-              "from-emerald-400/80 to-teal-600/60",
-              "from-amber-400/70 to-orange-600/50",
-            ].map((grad, i) => (
-              <div
-                key={grad}
-                className={`absolute left-1/2 w-[88%] overflow-hidden rounded-2xl border border-white/15 bg-gradient-to-br ${grad} shadow-xl`}
-                style={{
-                  height: 120,
-                  transform: `translateX(-50%) translateY(${i * 10}px) scale(${1 - i * 0.05})`,
-                  zIndex: 3 - i,
-                  opacity: 1 - i * 0.12,
-                }}
-              >
-                <div className="flex h-full flex-col justify-end p-4">
-                  <p className="text-sm font-semibold text-white drop-shadow">
-                    {i === 0 ? "Ad-free music 🎵" : i === 1 ? "HQ streaming" : "Smart playlists"}
-                  </p>
-                  <p className="text-[11px] text-white/80">GMAX Premium</p>
-                </div>
-              </div>
-            ))}
-          </div>
+          <AnimatedCardStack />
 
-          {/* Features */}
-          <ul className="mt-8 space-y-2.5">
+          <ul className="mt-10 space-y-2.5">
             {PREMIUM_FEATURES.map((f) => (
               <li key={f.title} className="flex gap-3 rounded-xl bg-raised px-3 py-2.5">
                 <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full bg-accent/20 text-accent">
@@ -224,7 +383,6 @@ export function SubscriptionModal() {
             ))}
           </ul>
 
-          {/* Plan cards */}
           <p className="mb-2 mt-6 text-xs font-semibold uppercase tracking-wide text-muted">
             Choose a plan
           </p>
@@ -279,13 +437,12 @@ export function SubscriptionModal() {
           </p>
         </div>
 
-        {/* CTA */}
         <div className="shrink-0 border-t border-hairline bg-raised px-5 py-4 pb-[calc(16px+env(safe-area-inset-bottom))]">
           <button
             type="button"
             disabled={busy}
             onClick={() => void startPay()}
-            className="flex h-13 w-full items-center justify-center gap-2 rounded-full bg-accent text-[15px] font-bold text-bg disabled:opacity-60"
+            className="flex w-full items-center justify-center gap-2 rounded-full bg-accent text-[15px] font-bold text-bg disabled:opacity-60"
             style={{ height: 52 }}
           >
             {busy ? (
