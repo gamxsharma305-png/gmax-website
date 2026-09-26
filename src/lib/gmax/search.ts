@@ -93,7 +93,43 @@ export type ResolveResult = {
   videoId?: string | null;
   streamUrl?: string | null;
   duration?: number | null;
+  title?: string | null;
+  artist?: string | null;
+  thumbnail?: string | null;
 };
+
+/** Fetch direct audio URL from our youtubei.js stream API. */
+export async function resolveYouTubeStream(
+  videoId: string,
+): Promise<ResolveResult | null> {
+  const id = videoId.trim();
+  if (!id) return null;
+  try {
+    const res = await fetch(`/api/stream?videoId=${encodeURIComponent(id)}`);
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      success?: boolean;
+      data?: {
+        url?: string;
+        title?: string;
+        artist?: string;
+        thumbnail?: string;
+        duration?: number;
+      };
+    };
+    if (!json.success || !json.data?.url) return null;
+    return {
+      videoId: id,
+      streamUrl: json.data.url,
+      duration: json.data.duration ?? null,
+      title: json.data.title ?? null,
+      artist: json.data.artist ?? null,
+      thumbnail: json.data.thumbnail ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export async function resolveVideoId(
   title: string,
@@ -110,6 +146,17 @@ export async function resolveVideoId(
     });
     if (res.ok) {
       const data = (await res.json()) as ResolveResult;
+      // If resolve only returned a videoId, upgrade to real stream URL
+      if (data.videoId && !data.streamUrl) {
+        const stream = await resolveYouTubeStream(data.videoId);
+        if (stream?.streamUrl) {
+          return {
+            ...data,
+            streamUrl: stream.streamUrl,
+            duration: stream.duration ?? data.duration,
+          };
+        }
+      }
       if (data.streamUrl || data.videoId) return data;
     }
   } catch {

@@ -369,6 +369,22 @@ async function getYtPlayer(): Promise<YtPlayer> {
   return yt;
 }
 
+async function playViaAudio(track: Track, url: string): Promise<boolean> {
+  mode = "audio";
+  try { yt?.pauseVideo(); } catch { /* */ }
+  const el = ensureAudio();
+  el.src = url;
+  el.volume = volume;
+  try {
+    await el.play();
+    bindMediaSession(track);
+    handlers?.onBuffer(false);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function enginePlay(track: Track) {
   wantPlay = true;
   netRetries = 0;
@@ -376,7 +392,16 @@ export async function enginePlay(track: Track) {
   stopPoll();
   handlers?.onBuffer(true);
 
-  if (track.provider === "youtube" && track.videoId && !ytFailed) {
+  // Prefer HTML5 audio when we have a direct stream (incl. YouTube via /api/stream)
+  const stream = safeUrl(track.streamUrl || "");
+  if (stream) {
+    const ok = await playViaAudio(track, stream);
+    if (ok) return;
+    // stream URL failed — fall through to YouTube iframe if possible
+  }
+
+  // Fallback: YouTube iframe (limited background support)
+  if (track.videoId && !ytFailed) {
     mode = "youtube";
     try {
       if (audio) { audio.pause(); audio.removeAttribute("src"); }
@@ -391,25 +416,15 @@ export async function enginePlay(track: Track) {
     }
   }
 
-  mode = "audio";
-  try { yt?.pauseVideo(); } catch { /* */ }
-  const el = ensureAudio();
-  const url = safeUrl(track.streamUrl || track.previewUrl || "");
-  if (!url) {
-    handlers?.onBuffer(false);
-    handlers?.onError("Couldn't find a playable source for this track.");
-    return;
+  // Last resort: preview URL
+  const preview = safeUrl(track.previewUrl || "");
+  if (preview) {
+    const ok = await playViaAudio(track, preview);
+    if (ok) return;
   }
-  el.src = url;
-  el.volume = volume;
-  try {
-    await el.play();
-    bindMediaSession(track);
-    handlers?.onBuffer(false);
-  } catch {
-    handlers?.onBuffer(false);
-    handlers?.onError("Couldn't play this track.");
-  }
+
+  handlers?.onBuffer(false);
+  handlers?.onError("Couldn't find a playable source for this track.");
 }
 
 export function enginePause() {

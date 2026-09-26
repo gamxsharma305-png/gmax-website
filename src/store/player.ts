@@ -10,7 +10,7 @@ import {
   setMediaSessionNav,
 } from "@/lib/gmax/engine";
 import { canPlay } from "@/lib/gmax/normalize";
-import { resolveVideoId } from "@/lib/gmax/search";
+import { resolveVideoId, resolveYouTubeStream } from "@/lib/gmax/search";
 import { useLibrary } from "./library";
 
 type PlayerState = {
@@ -94,10 +94,32 @@ function bindEngine() {
   );
 }
 
+/** Resolve stream URL — YouTube videoId → /api/stream for real HTML5 audio. */
 async function maybeResolve(track: Track, force = false): Promise<Track> {
   if (!force && track.streamUrl) return track;
+
+  // YouTube: prefer direct audio stream (background playback)
+  if (track.videoId && (force || !track.streamUrl)) {
+    const token = ++resolveInflight;
+    try {
+      const stream = await resolveYouTubeStream(track.videoId);
+      if (token !== resolveInflight) return track;
+      if (stream?.streamUrl) {
+        return {
+          ...track,
+          streamUrl: stream.streamUrl,
+          duration: stream.duration || track.duration,
+          albumImageUrl: stream.thumbnail || track.albumImageUrl,
+        };
+      }
+    } catch {
+      /* fall through — engine may use iframe */
+    }
+  }
+
   if (!track.title) return track;
 
+  // Already have youtube videoId and we tried stream — keep for iframe fallback
   if (track.provider === "youtube" && track.videoId && !force) {
     return track;
   }
@@ -109,7 +131,7 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
   try {
     const resolved = await resolveVideoId(track.title, track.artist?.name ?? "");
     if (token !== resolveInflight) return track;
-    if (resolved?.streamUrl && track.provider !== "youtube") {
+    if (resolved?.streamUrl) {
       return {
         ...track,
         streamUrl: resolved.streamUrl,
@@ -118,6 +140,17 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
       };
     }
     if (resolved?.videoId && !track.videoId) {
+      // Got videoId from resolve — try stream API once
+      const stream = await resolveYouTubeStream(resolved.videoId);
+      if (token !== resolveInflight) return track;
+      if (stream?.streamUrl) {
+        return {
+          ...track,
+          videoId: resolved.videoId,
+          streamUrl: stream.streamUrl,
+          duration: stream.duration || track.duration,
+        };
+      }
       return { ...track, videoId: resolved.videoId };
     }
   } catch {
@@ -136,10 +169,8 @@ async function start(track: Track, forceResolve = false) {
     duration: track.duration || 0,
   });
 
-  const isYt = track.provider === "youtube" && Boolean(track.videoId);
-  let resolved = isYt
-    ? track
-    : await maybeResolve(track, forceResolve || !track.streamUrl);
+  // Always try to get a real stream URL (YouTube included)
+  let resolved = await maybeResolve(track, forceResolve || !track.streamUrl);
 
   if (!resolved.streamUrl && !resolved.videoId && !resolved.previewUrl) {
     resolved = await maybeResolve(track, true);
@@ -176,7 +207,7 @@ async function prefetchNeighbor() {
   const nextIndex = seq[(pos + 1) % seq.length];
   if (nextIndex == null) return;
   const t = queue[nextIndex];
-  if (!t || t.streamUrl || t.videoId) return;
+  if (!t || t.streamUrl) return;
   try {
     const resolved = await maybeResolve(t, true);
     if (resolved.streamUrl || resolved.videoId) {
@@ -262,7 +293,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       set({ index: nextIndex, error: null, isPlaying: true });
       const t = queue[nextIndex];
       if (t) {
-        void start(t, !t.streamUrl && !t.videoId).finally(done);
+        void start(t, !t.streamUrl).finally(done);
       } else {
         enginePause();
         set({ isPlaying: false });
