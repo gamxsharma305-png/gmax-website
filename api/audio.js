@@ -1,89 +1,20 @@
-import { Innertube, UniversalCache } from 'youtubei.js';
-
-/**
- * Same-origin audio proxy — buffers upstream then returns bytes.
- * Streaming pipes often hang on Vercel; full buffer is more reliable under ~4MB.
- */
-
-let youtubeClient = null;
-let clientPromise = null;
+import { resolveYouTubeAudio } from './yt-resolve.js';
 
 /** @type {Map<string, { url: string, mime: string, expires: number }>} */
 const upstreamCache = new Map();
-
 /** @type {Map<string, { buf: Buffer, mime: string, expires: number }>} */
 const bodyCache = new Map();
-
-async function getYouTubeClient() {
-  if (youtubeClient) return youtubeClient;
-  if (clientPromise) return clientPromise;
-  clientPromise = Innertube.create({
-    cache: new UniversalCache(false),
-    generate_session_locally: false,
-    enable_session_cache: false,
-  })
-    .then((c) => {
-      youtubeClient = c;
-      return c;
-    })
-    .catch((err) => {
-      clientPromise = null;
-      throw err;
-    });
-  return clientPromise;
-}
-
-async function resolveAudioUrl(format, player) {
-  if (!format) return null;
-  if (format.url && typeof format.url === 'string' && format.url.startsWith('http')) {
-    return format.url;
-  }
-  if (!player) return null;
-  try {
-    let url = format.decipher(player);
-    if (url && typeof url.then === 'function') url = await url;
-    if (url && typeof url === 'string') return url;
-  } catch {
-    /* */
-  }
-  return null;
-}
-
-const CLIENTS = ['IOS', 'ANDROID', 'WEB'];
 
 async function getUpstream(videoId) {
   const hit = upstreamCache.get(videoId);
   if (hit && hit.expires > Date.now()) return hit;
 
-  const yt = await getYouTubeClient();
-  let info = null;
-  for (const client of CLIENTS) {
-    try {
-      info = await yt.getBasicInfo(videoId, client);
-      if (info) break;
-    } catch {
-      info = null;
-    }
-  }
-  if (!info) throw new Error('Video unavailable');
-
-  let audioFormat = null;
-  try {
-    audioFormat = info.chooseFormat({ type: 'audio', quality: 'best' });
-  } catch {
-    const adaptive = info.streaming_data?.adaptive_formats || [];
-    audioFormat =
-      adaptive.find((f) => f.has_audio && !f.has_video) ||
-      adaptive.find((f) => String(f.mime_type || '').startsWith('audio/')) ||
-      null;
-  }
-  if (!audioFormat) throw new Error('No audio format');
-
-  const url = await resolveAudioUrl(audioFormat, yt.session.player);
-  if (!url) throw new Error('Failed to resolve stream');
-
-  const mime = (audioFormat.mime_type || 'audio/mp4').split(';')[0].trim();
-  const entry = { url, mime, expires: Date.now() + 4 * 60 * 1000 };
+  const data = await resolveYouTubeAudio(videoId);
+  const entry = {
+    url: data.url,
+    mime: data.mime || 'audio/mp4',
+    expires: Date.now() + 4 * 60 * 1000,
+  };
   upstreamCache.set(videoId, entry);
   if (upstreamCache.size > 40) {
     const first = upstreamCache.keys().next().value;
@@ -100,18 +31,20 @@ async function fetchFullBody(videoId) {
   let res = await fetch(upstream.url, {
     headers: {
       'User-Agent':
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
       Accept: '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
     },
   });
 
+  // Retry once with fresh resolve if upstream expired/blocked
   if (!res.ok) {
     upstreamCache.delete(videoId);
     upstream = await getUpstream(videoId);
     res = await fetch(upstream.url, {
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
         Accept: '*/*',
       },
     });
@@ -121,14 +54,15 @@ async function fetchFullBody(videoId) {
 
   const ab = await res.arrayBuffer();
   const buf = Buffer.from(ab);
-  // Vercel hobby soft limit ~4.5MB — still return; client may get truncated on huge files
+  if (buf.length < 4000) throw new Error('Audio payload too small');
+
   const entry = {
     buf,
     mime: upstream.mime || 'audio/mp4',
     expires: Date.now() + 3 * 60 * 1000,
   };
   bodyCache.set(videoId, entry);
-  if (bodyCache.size > 12) {
+  if (bodyCache.size > 10) {
     const first = bodyCache.keys().next().value;
     if (first) bodyCache.delete(first);
   }
@@ -184,6 +118,11 @@ export default async function handler(req, res) {
     return res.end(buf);
   } catch (err) {
     console.error('[audio proxy]', videoId, err?.message || err);
-    return res.status(500).json({ error: err?.message || 'Proxy failed' });
+    const msg = String(err?.message || 'Proxy failed');
+    return res.status(500).json({
+      error: /bot|sign in/i.test(msg)
+        ? 'YouTube blocked extraction. Trying alternate mirrors failed — retry shortly.'
+        : msg,
+    });
   }
 }

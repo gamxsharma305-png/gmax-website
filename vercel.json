@@ -21,6 +21,9 @@
     },
     "api/audio.js": {
       "maxDuration": 60
+    },
+    "api/yt-resolve.js": {
+      "maxDuration": 30
     }
   }
 }
