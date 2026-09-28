@@ -1,5 +1,6 @@
 import type { Track } from "./types";
 import { normalizeTrack } from "./normalize";
+import { resolveSaavnStream } from "./saavn";
 
 const DB_NAME = "gmax-offline";
 const DB_VER = 1;
@@ -45,10 +46,9 @@ export function offlineSourceUrl(track: Track): string | null {
     return `/api/audio?videoId=${encodeURIComponent(track.videoId)}`;
   }
   const s = track.streamUrl?.trim() || "";
-  if (s && !s.includes("/api/audio") && (s.startsWith("http") || s.startsWith("blob:"))) {
+  if (s && (s.startsWith("http") || s.startsWith("blob:") || s.startsWith("/"))) {
     return s;
   }
-  if (s.includes("/api/audio")) return s;
   return null;
 }
 
@@ -119,71 +119,104 @@ export async function offlineRemove(id: string): Promise<void> {
   await txDone(tx);
 }
 
+async function fetchToBlob(
+  url: string,
+  onProgress?: (pct: number) => void,
+): Promise<Blob> {
+  const res = await fetch(url, { mode: "cors" });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const j = (await res.json()) as { error?: string };
+      if (j?.error) detail = j.error;
+    } catch {
+      /* */
+    }
+    throw new Error(detail);
+  }
+
+  const total = Number(res.headers.get("content-length") || 0);
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const blob = await res.blob();
+    onProgress?.(100);
+    return blob;
+  }
+
+  const chunks: BlobPart[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    if (total > 0) onProgress?.(Math.min(99, Math.round((received / total) * 100)));
+    else onProgress?.(Math.min(95, Math.round(received / 40000)));
+  }
+  const mime = (res.headers.get("content-type") || "audio/mpeg").split(";")[0];
+  onProgress?.(100);
+  return new Blob(chunks, { type: mime });
+}
+
+/**
+ * Download track for offline.
+ * YouTube: try /api/audio first; on bot-block, fall back to Saavn matching stream.
+ */
 export async function offlineDownload(
   track: Track,
   streamUrl?: string | null,
   onProgress?: (pct: number) => void,
-): Promise<{ ok: true; bytes: number } | { ok: false; error: string }> {
-  const url = streamUrl || offlineSourceUrl(track);
-  if (!url) {
-    return {
-      ok: false,
-      error: "No downloadable source (need YouTube id or direct stream).",
-    };
-  }
+): Promise<{ ok: true; bytes: number; via?: string } | { ok: false; error: string }> {
+  const attempts: string[] = [];
 
-  try {
-    const res = await fetch(url, { mode: "cors" });
-    if (!res.ok) {
-      return {
-        ok: false,
-        error:
-          res.status === 500
-            ? "Server could not extract audio. Try again."
-            : `Download failed (${res.status})`,
-      };
-    }
-
-    const total = Number(res.headers.get("content-length") || 0);
-    const reader = res.body?.getReader();
-    if (!reader) {
-      const blob = await res.blob();
-      if (blob.size < 8000) {
-        return { ok: false, error: "File too small — stream may have failed." };
-      }
+  // 1) Explicit URL or YouTube proxy
+  const primary = streamUrl || offlineSourceUrl(track);
+  if (primary) {
+    try {
+      onProgress?.(5);
+      const blob = await fetchToBlob(primary, onProgress);
+      if (blob.size < 8000) throw new Error("File too small");
       await saveBlob(track, blob);
-      onProgress?.(100);
-      return { ok: true, bytes: blob.size };
-    }
-
-    const chunks: BlobPart[] = [];
-    let received = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.byteLength;
-      if (total > 0) onProgress?.(Math.min(99, Math.round((received / total) * 100)));
-      else onProgress?.(Math.min(95, Math.round(received / 50000)));
-    }
-    const mime = res.headers.get("content-type") || "audio/mp4";
-    const blob = new Blob(chunks, { type: mime.split(";")[0] });
-    if (blob.size < 8000) {
-      return { ok: false, error: "File too small — stream may have failed." };
-    }
-    await saveBlob(track, blob);
-    onProgress?.(100);
-    return { ok: true, bytes: blob.size };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Download failed";
-    if (/cors|network|failed/i.test(msg)) {
       return {
-        ok: false,
-        error: "Network/CORS blocked this source. YouTube uses in-app proxy.",
+        ok: true,
+        bytes: blob.size,
+        via: primary.includes("/api/audio") ? "youtube" : "stream",
       };
+    } catch (e) {
+      attempts.push(e instanceof Error ? e.message : "primary failed");
     }
-    return { ok: false, error: msg };
   }
+
+  // 2) Saavn fallback (works when YouTube is bot-blocked)
+  try {
+    onProgress?.(10);
+    const title = track.title || "";
+    const artist = track.artist?.name || "";
+    const hit = await resolveSaavnStream(title, artist);
+    if (hit?.streamUrl) {
+      const blob = await fetchToBlob(hit.streamUrl, onProgress);
+      if (blob.size < 8000) throw new Error("Saavn file too small");
+      await saveBlob(
+        {
+          ...track,
+          duration: hit.duration || track.duration,
+        },
+        blob,
+      );
+      return { ok: true, bytes: blob.size, via: "saavn" };
+    }
+    attempts.push("No Saavn match");
+  } catch (e) {
+    attempts.push(e instanceof Error ? e.message : "saavn failed");
+  }
+
+  return {
+    ok: false,
+    error:
+      attempts.find((a) => /bot|block|extract/i.test(a)) ||
+      attempts[0] ||
+      "Could not save offline. Try another track.",
+  };
 }
 
 async function saveBlob(track: Track, blob: Blob) {

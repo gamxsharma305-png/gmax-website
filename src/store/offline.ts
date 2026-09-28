@@ -15,6 +15,7 @@ type OfflineState = {
   downloadingId: string | null;
   progress: number;
   error: string | null;
+  lastVia: string | null;
   hydrated: boolean;
   hydrate: () => Promise<void>;
   isSaved: (id: string) => boolean;
@@ -29,6 +30,7 @@ export const useOffline = create<OfflineState>((set, get) => ({
   downloadingId: null,
   progress: 0,
   error: null,
+  lastVia: null,
   hydrated: false,
 
   hydrate: async () => {
@@ -43,13 +45,13 @@ export const useOffline = create<OfflineState>((set, get) => ({
   isSaved: (id) => get().ids.has(id),
 
   download: async (track, streamUrl) => {
-    set({ downloadingId: track.id, progress: 0, error: null });
+    set({ downloadingId: track.id, progress: 0, error: null, lastVia: null });
     const url = streamUrl || offlineSourceUrl(track);
     const res = await offlineDownload(track, url, (pct) => {
       set({ progress: pct });
     });
     if (!res.ok) {
-      set({ downloadingId: null, progress: 0, error: res.error });
+      set({ downloadingId: null, progress: 0, error: res.error, lastVia: null });
       return false;
     }
     const tracks = await offlineList();
@@ -59,6 +61,7 @@ export const useOffline = create<OfflineState>((set, get) => ({
       downloadingId: null,
       progress: 100,
       error: null,
+      lastVia: res.via || null,
     });
     return true;
   },
