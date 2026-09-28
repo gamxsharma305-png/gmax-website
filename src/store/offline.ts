@@ -6,6 +6,7 @@ import {
   offlineHas,
   offlineList,
   offlineRemove,
+  offlineSourceUrl,
 } from "@/lib/gmax/offline";
 
 type OfflineState = {
@@ -17,7 +18,7 @@ type OfflineState = {
   hydrated: boolean;
   hydrate: () => Promise<void>;
   isSaved: (id: string) => boolean;
-  download: (track: Track, streamUrl: string) => Promise<boolean>;
+  download: (track: Track, streamUrl?: string | null) => Promise<boolean>;
   remove: (id: string) => Promise<void>;
   getBlobUrl: (id: string) => Promise<string | null>;
 };
@@ -31,7 +32,6 @@ export const useOffline = create<OfflineState>((set, get) => ({
   hydrated: false,
 
   hydrate: async () => {
-    if (get().hydrated) return;
     const tracks = await offlineList();
     set({
       tracks,
@@ -44,7 +44,8 @@ export const useOffline = create<OfflineState>((set, get) => ({
 
   download: async (track, streamUrl) => {
     set({ downloadingId: track.id, progress: 0, error: null });
-    const res = await offlineDownload(track, streamUrl, (pct) => {
+    const url = streamUrl || offlineSourceUrl(track);
+    const res = await offlineDownload(track, url, (pct) => {
       set({ progress: pct });
     });
     if (!res.ok) {
@@ -73,7 +74,6 @@ export const useOffline = create<OfflineState>((set, get) => ({
   getBlobUrl: (id) => offlineGetBlobUrl(id),
 }));
 
-// Keep has() in sync for non-react callers
 export async function ensureOfflineHydrated() {
   const s = useOffline.getState();
   if (!s.hydrated) await s.hydrate();
@@ -82,7 +82,6 @@ export async function ensureOfflineHydrated() {
 export async function peekOfflineBlob(id: string): Promise<string | null> {
   await ensureOfflineHydrated();
   if (!useOffline.getState().ids.has(id)) {
-    // double-check IDB in case set is stale
     if (!(await offlineHas(id))) return null;
   }
   return offlineGetBlobUrl(id);

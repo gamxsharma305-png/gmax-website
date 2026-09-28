@@ -1,13 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { AUTO_PLAYLISTS } from "@/lib/gmax/catalog";
+import { trackArtist, trackTitle } from "@/lib/gmax/normalize";
 import { searchCatalog } from "@/lib/gmax/search";
 import { likedPlaylist, useLibrary } from "@/store/library";
+import { useOffline } from "@/store/offline";
 import { usePlayer } from "@/store/player";
 import { useUi } from "@/store/ui";
 import { Artwork } from "./Artwork";
 
-const FILTERS = ["Playlists", "Artists", "Albums"] as const;
+const FILTERS = ["Playlists", "Offline", "Artists", "Albums"] as const;
 
 export function LibraryView() {
   const playlists = useLibrary((s) => s.playlists);
@@ -19,11 +21,19 @@ export function LibraryView() {
   const openPlaylist = useUi((s) => s.openPlaylist);
   const playTrack = usePlayer((s) => s.playTrack);
 
+  const offlineTracks = useOffline((s) => s.tracks);
+  const offlineHydrate = useOffline((s) => s.hydrate);
+  const removeOffline = useOffline((s) => s.remove);
+
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("Playlists");
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
   const [autoLoading, setAutoLoading] = useState<string | null>(null);
   const [autoError, setAutoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void offlineHydrate();
+  }, [offlineHydrate]);
 
   const allPlaylists = useMemo(() => {
     const sorted = [...playlists].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -31,7 +41,7 @@ export function LibraryView() {
   }, [playlists, liked]);
 
   const derived = useMemo(() => {
-    const tracks = [...liked, ...playlists.flatMap((p) => p.tracks), ...recents];
+    const tracks = [...liked, ...playlists.flatMap((p) => p.tracks), ...recents, ...offlineTracks];
     const artists = new Map<string, { name: string; image: string; count: number }>();
     const albums = new Map<string, { name: string; artist: string; image: string; count: number }>();
     for (const t of tracks) {
@@ -54,7 +64,7 @@ export function LibraryView() {
       artists: [...artists.values()].sort((x, y) => y.count - x.count),
       albums: [...albums.values()].sort((x, y) => y.count - x.count),
     };
-  }, [liked, playlists, recents]);
+  }, [liked, playlists, recents, offlineTracks]);
 
   async function playAutoMix(id: string, query: string, label: string, save: boolean) {
     setAutoError(null);
@@ -140,6 +150,7 @@ export function LibraryView() {
               }`}
             >
               {f}
+              {f === "Offline" && offlineTracks.length > 0 ? ` · ${offlineTracks.length}` : ""}
             </button>
           ))}
         </div>
@@ -148,7 +159,6 @@ export function LibraryView() {
       <div className="gmax-scroll px-4">
         {filter === "Playlists" ? (
           <>
-            {/* Liked + your playlists FIRST */}
             <p className="mb-2 mt-1 text-[10px] font-medium tracking-[0.22em] text-faint">
               YOUR PLAYLISTS
             </p>
@@ -190,7 +200,6 @@ export function LibraryView() {
               </div>
             ))}
 
-            {/* Auto mixes BELOW */}
             <p className="mb-2 mt-6 text-[10px] font-medium tracking-[0.22em] text-faint">
               AUTO MIXES
             </p>
@@ -219,6 +228,63 @@ export function LibraryView() {
               ))}
             </div>
             {autoError ? <p className="mb-3 text-sm text-red-400">{autoError}</p> : null}
+          </>
+        ) : null}
+
+        {filter === "Offline" ? (
+          <>
+            <p className="mb-2 mt-1 text-[10px] font-medium tracking-[0.22em] text-faint">
+              DOWNLOADED · PLAY WITHOUT NET
+            </p>
+            <p className="mb-3 text-[12px] text-muted">
+              Save from Now Playing (cloud icon). YouTube + Saavn supported.
+            </p>
+            {offlineTracks.length === 0 ? (
+              <Empty text="No offline songs yet. Open a track → tap the download icon." />
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="mb-3 w-full rounded-full bg-fg py-2.5 text-sm font-semibold text-bg"
+                  onClick={() => {
+                    if (offlineTracks[0])
+                      void playTrack(offlineTracks[0], {
+                        tracks: offlineTracks,
+                        label: "Offline",
+                      });
+                  }}
+                >
+                  Play all offline
+                </button>
+                {offlineTracks.map((t) => (
+                  <div key={t.id} className="flex items-center gap-2 py-2">
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                      onClick={() =>
+                        void playTrack(t, { tracks: offlineTracks, label: "Offline" })
+                      }
+                    >
+                      <Artwork src={t.albumImageUrl} title={trackTitle(t)} className="size-12 rounded-sm" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[15px] font-medium">
+                          {trackTitle(t)}
+                        </span>
+                        <span className="text-[12px] text-muted">{trackArtist(t)}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid size-10 place-items-center text-faint"
+                      onClick={() => void removeOffline(t.id)}
+                      aria-label={`Remove ${trackTitle(t)} offline"`}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </>
+            )}
           </>
         ) : null}
 

@@ -18,6 +18,7 @@ import {
   Timer,
   X,
 } from "lucide-react";
+import { offlineSourceUrl } from "@/lib/gmax/offline";
 import { formatTime } from "@/lib/gmax/text";
 import { trackArtist, trackTitle } from "@/lib/gmax/normalize";
 import { useLibrary } from "@/store/library";
@@ -64,7 +65,6 @@ export function NowPlaying() {
   const isSaved = useOffline((s) => (current ? s.isSaved(current.id) : false));
   const downloadingId = useOffline((s) => s.downloadingId);
   const dlProgress = useOffline((s) => s.progress);
-  const dlError = useOffline((s) => s.error);
   const download = useOffline((s) => s.download);
   const removeOffline = useOffline((s) => s.remove);
 
@@ -78,12 +78,9 @@ export function NowPlaying() {
     void offlineHydrate();
   }, [offlineHydrate]);
 
-  // Sleep timer countdown
   useEffect(() => {
     if (sleepLeft == null) return;
     if (sleepLeft <= 0) {
-      usePlayer.getState().toggle();
-      // ensure pause
       const { isPlaying: playing } = usePlayer.getState();
       if (playing) usePlayer.getState().toggle();
       setSleepLeft(null);
@@ -96,7 +93,7 @@ export function NowPlaying() {
 
   useEffect(() => {
     if (!toast) return;
-    const t = window.setTimeout(() => setToast(null), 2500);
+    const t = window.setTimeout(() => setToast(null), 2800);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -109,6 +106,7 @@ export function NowPlaying() {
   const upcoming = queue.slice(index + 1);
   const isPreview = Boolean(current.previewUrl) && !current.videoId;
   const busyDl = downloadingId === current.id;
+  const canOffline = Boolean(offlineSourceUrl(current));
 
   async function onDownload() {
     if (!current) return;
@@ -117,13 +115,18 @@ export function NowPlaying() {
       setToast("Removed from offline");
       return;
     }
-    const url = current.streamUrl;
-    if (!url || url.includes("/api/audio")) {
-      setToast("Offline save needs a direct stream (try Saavn tracks)");
+    if (!canOffline) {
+      setToast("This track can’t be saved offline");
       return;
     }
-    const ok = await download(current, url);
-    setToast(ok ? "Saved offline ✓" : dlError || "Download failed");
+    const ok = await download(current);
+    setToast(
+      ok
+        ? current.videoId
+          ? "YouTube saved offline ✓"
+          : "Saved offline ✓"
+        : useOffline.getState().error || "Download failed",
+    );
   }
 
   function startSleep(mins: number) {
@@ -170,9 +173,7 @@ export function NowPlaying() {
         <div className="mb-3 text-center">
           <p className="truncate font-display text-2xl font-semibold">{title}</p>
           <p className="mt-1 truncate text-[15px] text-muted">{artist}</p>
-          {isPreview ? (
-            <p className="mt-1 text-[11px] tracking-wide text-faint">PREVIEW</p>
-          ) : null}
+          {isPreview ? <p className="mt-1 text-[11px] tracking-wide text-faint">PREVIEW</p> : null}
           {isSaved ? (
             <p className="mt-1 text-[11px] font-medium text-accent">Available offline</p>
           ) : null}
@@ -242,7 +243,6 @@ export function NowPlaying() {
           </button>
         </div>
 
-        {/* Musify-style bottom action bar */}
         <div className="mt-auto">
           <div className="flex items-center justify-between rounded-full border border-line bg-raised/90 px-3 py-2.5 shadow-lg backdrop-blur-md">
             <button
@@ -250,14 +250,20 @@ export function NowPlaying() {
               onClick={() => void onDownload()}
               className="grid size-10 place-items-center text-muted"
               aria-label={isSaved ? "Remove offline" : "Download offline"}
-              title={isSaved ? "Remove offline" : "Save offline"}
+              title={
+                current.videoId
+                  ? "Save YouTube audio offline"
+                  : isSaved
+                    ? "Remove offline"
+                    : "Save offline"
+              }
             >
               {busyDl ? (
                 <Loader2 size={20} className="animate-spin text-accent" />
               ) : isSaved ? (
                 <Check size={20} className="text-accent" />
               ) : (
-                <CloudDownload size={20} />
+                <CloudDownload size={20} className={canOffline ? "" : "opacity-40"} />
               )}
             </button>
 
@@ -331,7 +337,7 @@ export function NowPlaying() {
 
           {busyDl ? (
             <p className="mt-2 text-center text-[11px] text-muted">
-              Downloading… {dlProgress}%
+              {current.videoId ? "Saving YouTube audio…" : "Downloading…"} {dlProgress}%
             </p>
           ) : null}
           {sleepLeft != null ? (
@@ -385,7 +391,6 @@ export function NowPlaying() {
               </div>
               <p className="text-sm text-muted">
                 Lyrics for <span className="text-fg">{title}</span> aren’t loaded yet.
-                Offline + lyrics API can be wired next.
               </p>
             </div>
           ) : null}
