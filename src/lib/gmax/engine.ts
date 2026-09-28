@@ -5,7 +5,6 @@ type EngineHandlers = {
   onPlay: () => void;
   onPause: () => void;
   onEnded: () => void;
-  /** Fired once when ~12s left — warm next track (NOTE-style preload). */
   onNearEnd?: () => void;
   onTime: (position: number, duration: number) => void;
   onError: (message: string) => void;
@@ -25,7 +24,6 @@ type YtPlayer = {
 };
 
 let audio: HTMLAudioElement | null = null;
-/** Secondary element warmed with next track URL for gapless-ish advance */
 let audioNext: HTMLAudioElement | null = null;
 let yt: YtPlayer | null = null;
 let ytFailed = false;
@@ -35,11 +33,15 @@ let poll: number | null = null;
 let volume = 1;
 let navHandlers: { next?: () => void; prev?: () => void } = {};
 let wakeLock: WakeLockSentinel | null = null;
+
+/** True while we intend to play (not user-paused). */
 let wantPlay = false;
+/** True after user/OS media-session pause — blocks all auto-resume. */
+let userPaused = false;
+
 let watchTimer: number | null = null;
 let lastWatchPos = 0;
 let stallTicks = 0;
-/** NOTE-style: fire onComplete only once per track */
 let completionFired = false;
 let nearEndFired = false;
 let warmedUrl: string | null = null;
@@ -68,24 +70,37 @@ async function releaseWakeLock() {
   wakeLock = null;
 }
 
+function setSessionState(state: "playing" | "paused" | "none") {
+  try {
+    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state;
+  } catch {
+    /* */
+  }
+}
+
 function fireEndedOnce() {
-  if (completionFired) return;
+  if (completionFired || userPaused) return;
   completionFired = true;
   handlers?.onEnded();
 }
 
 function maybeNearEnd(pos: number, dur: number) {
-  if (nearEndFired || !Number.isFinite(dur) || dur < 20) return;
+  if (nearEndFired || userPaused || !Number.isFinite(dur) || dur < 20) return;
   if (dur - pos <= 12 && pos > 5) {
     nearEndFired = true;
     handlers?.onNearEnd?.();
   }
 }
 
+/** Only auto-resume when we still want playback and user did not pause. */
+function shouldAutoResume(): boolean {
+  return wantPlay && !userPaused && !completionFired;
+}
+
 function startPlayWatchdog() {
   if (typeof window === "undefined" || watchTimer != null) return;
   watchTimer = window.setInterval(() => {
-    if (!wantPlay) {
+    if (!shouldAutoResume()) {
       stallTicks = 0;
       return;
     }
@@ -96,13 +111,7 @@ function startPlayWatchdog() {
       pos = audio.currentTime;
       dur = audio.duration || 0;
       playing = !audio.paused;
-      // Some mobile browsers miss "ended" in background — detect manually
-      if (
-        Number.isFinite(dur) &&
-        dur > 0 &&
-        pos >= dur - 0.35 &&
-        !completionFired
-      ) {
+      if (Number.isFinite(dur) && dur > 0 && pos >= dur - 0.35 && !completionFired) {
         fireEndedOnce();
         return;
       }
@@ -122,12 +131,15 @@ function startPlayWatchdog() {
         return;
       }
     }
+    // Stall recovery only — never override an intentional pause
     if (!playing || (pos > 0.5 && Math.abs(pos - lastWatchPos) < 0.12)) {
       stallTicks += 1;
-      if (stallTicks >= 3) {
+      if (stallTicks >= 4) {
         stallTicks = 0;
-        void engineResume();
-        if (mode === "audio") scheduleNetRetry();
+        if (shouldAutoResume()) {
+          void softResume();
+          if (mode === "audio") scheduleNetRetry();
+        }
       }
     } else stallTicks = 0;
     lastWatchPos = pos;
@@ -146,11 +158,11 @@ let netRetryTimer: number | null = null;
 let netRetries = 0;
 
 function scheduleNetRetry() {
-  if (!wantPlay || mode !== "audio" || !audio) return;
+  if (!shouldAutoResume() || mode !== "audio" || !audio) return;
   if (netRetryTimer != null) return;
   netRetryTimer = window.setTimeout(() => {
     netRetryTimer = null;
-    if (!wantPlay || !audio) return;
+    if (!shouldAutoResume() || !audio) return;
     netRetries += 1;
     if (netRetries > 10) return;
     try {
@@ -178,30 +190,33 @@ function ensureAudio() {
 
   audio.addEventListener("play", () => {
     netRetries = 0;
+    userPaused = false;
+    wantPlay = true;
     handlers?.onPlay();
     void requestWakeLock();
-    try {
-      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
-    } catch {
-      /* */
-    }
+    setSessionState("playing");
   });
+
   audio.addEventListener("pause", () => {
-    // Don't treat OS/background hiccups as user pause while we still want play
-    if (mode === "audio" && wantPlay && !completionFired) {
+    // If user paused via notification / UI — stay paused
+    if (userPaused || !wantPlay) {
+      handlers?.onPause();
+      setSessionState("paused");
+      return;
+    }
+    // Unexpected pause while we still want play (buffer / OS blip)
+    if (mode === "audio" && !completionFired) {
       scheduleNetRetry();
       return;
     }
-    if (mode === "audio" && !wantPlay) handlers?.onPause();
-    try {
-      if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
-    } catch {
-      /* */
-    }
+    handlers?.onPause();
+    setSessionState("paused");
   });
+
   audio.addEventListener("ended", () => {
     if (mode === "audio") fireEndedOnce();
   });
+
   audio.addEventListener("timeupdate", () => {
     if (mode === "audio" && audio) {
       const pos = audio.currentTime;
@@ -221,17 +236,18 @@ function ensureAudio() {
       }
     }
   });
+
   audio.addEventListener("waiting", () => handlers?.onBuffer(true));
   audio.addEventListener("stalled", () => {
     handlers?.onBuffer(true);
-    if (wantPlay) scheduleNetRetry();
+    if (shouldAutoResume()) scheduleNetRetry();
   });
   audio.addEventListener("playing", () => {
     netRetries = 0;
     handlers?.onBuffer(false);
   });
   audio.addEventListener("error", () => {
-    if (wantPlay && netRetries < 6 && !completionFired) {
+    if (shouldAutoResume() && netRetries < 6) {
       scheduleNetRetry();
       return;
     }
@@ -253,7 +269,6 @@ function ensureAudioNext() {
   return el;
 }
 
-/** Warm next stream URL into secondary element (NOTE preloader idea). */
 export function engineWarmNext(url: string) {
   const u = safeUrl(url);
   if (!u || u.includes("/api/audio")) return;
@@ -307,31 +322,37 @@ function startYtPoll() {
   }, 400);
 }
 
-function bindMediaSession(track: Track) {
+function wireMediaSessionActions() {
   if (!("mediaSession" in navigator)) return;
   try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: safeText(track.title) || "Unknown",
-      artist: safeText(track.artist?.name) || "GMAX",
-      album: safeText(track.album) || "GMAX",
-      artwork: track.albumImageUrl
-        ? [
-            { src: track.albumImageUrl, sizes: "96x96", type: "image/jpeg" },
-            { src: track.albumImageUrl, sizes: "256x256", type: "image/jpeg" },
-            { src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" },
-          ]
-        : [],
-    });
-    navigator.mediaSession.playbackState = "playing";
-    void requestWakeLock();
+    // Play — notification ▶
     navigator.mediaSession.setActionHandler("play", () => {
-      void engineResume();
+      userPaused = false;
+      wantPlay = true;
+      void softResume();
+      setSessionState("playing");
     });
+    // Pause — notification ❚❚  (MUST stay paused)
     navigator.mediaSession.setActionHandler("pause", () => {
-      enginePause();
+      userPaused = true;
+      wantPlay = false;
+      hardPause();
+      handlers?.onPause();
+      setSessionState("paused");
     });
+    // Stop / dismiss (X on some OEMs)
     navigator.mediaSession.setActionHandler("stop", () => {
+      userPaused = true;
+      wantPlay = false;
       engineStop();
+      handlers?.onPause();
+      setSessionState("none");
+    });
+    navigator.mediaSession.setActionHandler("previoustrack", () => {
+      navHandlers.prev?.();
+    });
+    navigator.mediaSession.setActionHandler("nexttrack", () => {
+      navHandlers.next?.();
     });
     navigator.mediaSession.setActionHandler("seekbackward", (d) => {
       const off = d.seekOffset ?? 10;
@@ -356,8 +377,29 @@ function bindMediaSession(track: Track) {
     navigator.mediaSession.setActionHandler("seekto", (d) => {
       if (d.seekTime != null) engineSeek(d.seekTime);
     });
-    navigator.mediaSession.setActionHandler("nexttrack", () => navHandlers.next?.());
-    navigator.mediaSession.setActionHandler("previoustrack", () => navHandlers.prev?.());
+  } catch {
+    /* ignore */
+  }
+}
+
+function bindMediaSession(track: Track) {
+  if (!("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: safeText(track.title) || "Unknown",
+      artist: safeText(track.artist?.name) || "GMAX",
+      album: safeText(track.album) || "GMAX",
+      artwork: track.albumImageUrl
+        ? [
+            { src: track.albumImageUrl, sizes: "96x96", type: "image/jpeg" },
+            { src: track.albumImageUrl, sizes: "256x256", type: "image/jpeg" },
+            { src: track.albumImageUrl, sizes: "512x512", type: "image/jpeg" },
+          ]
+        : [],
+    });
+    setSessionState("playing");
+    void requestWakeLock();
+    wireMediaSessionActions();
   } catch {
     /* ignore */
   }
@@ -365,12 +407,40 @@ function bindMediaSession(track: Track) {
 
 export function setMediaSessionNav(next: () => void, prev: () => void) {
   navHandlers = { next, prev };
-  if (!("mediaSession" in navigator)) return;
+  wireMediaSessionActions();
+}
+
+function hardPause() {
+  void releaseWakeLock();
+  if (mode === "youtube") {
+    try {
+      yt?.pauseVideo();
+    } catch {
+      /* */
+    }
+  } else {
+    audio?.pause();
+  }
+}
+
+async function softResume() {
+  if (userPaused) return;
+  wantPlay = true;
+  startPlayWatchdog();
+  void requestWakeLock();
+  if (mode === "youtube") {
+    try {
+      yt?.playVideo();
+    } catch {
+      /* */
+    }
+    return;
+  }
+  if (!audio) return;
   try {
-    navigator.mediaSession.setActionHandler("nexttrack", () => navHandlers.next?.());
-    navigator.mediaSession.setActionHandler("previoustrack", () => navHandlers.prev?.());
+    await audio.play();
   } catch {
-    /* ignore */
+    scheduleNetRetry();
   }
 }
 
@@ -378,10 +448,10 @@ function keepAliveInBackground() {
   if (typeof document === "undefined") return;
 
   const kick = () => {
-    if (!wantPlay || completionFired) return;
+    if (!shouldAutoResume()) return;
     startPlayWatchdog();
     void requestWakeLock();
-    void engineResume();
+    void softResume();
   };
 
   document.addEventListener("visibilitychange", kick);
@@ -393,9 +463,8 @@ function keepAliveInBackground() {
   });
   document.addEventListener("resume", kick);
 
-  // Keep session alive; do NOT block track advance
   window.setInterval(() => {
-    if (!wantPlay || completionFired) return;
+    if (!shouldAutoResume()) return;
     if (mode === "audio" && audio && audio.paused) {
       void audio.play().catch(() => scheduleNetRetry());
     } else if (mode === "youtube" && yt) {
@@ -418,6 +487,7 @@ export function initEngine(h: EngineHandlers) {
   if (!inited) {
     inited = true;
     keepAliveInBackground();
+    wireMediaSessionActions();
   }
 }
 
@@ -490,12 +560,16 @@ async function getYtPlayer(): Promise<YtPlayer> {
           onStateChange: (e: { data: number }) => {
             if (mode !== "youtube") return;
             if (e.data === YT_PLAYING) {
+              userPaused = false;
               handlers?.onPlay();
               handlers?.onBuffer(false);
               startYtPoll();
+              setSessionState("playing");
             } else if (e.data === YT_PAUSED) {
-              // Background may pause iframe — resume if we still want play
-              if (wantPlay && !completionFired) {
+              if (userPaused || !wantPlay) {
+                handlers?.onPause();
+                setSessionState("paused");
+              } else if (shouldAutoResume()) {
                 try {
                   yt?.playVideo();
                 } catch {
@@ -503,6 +577,7 @@ async function getYtPlayer(): Promise<YtPlayer> {
                 }
               } else {
                 handlers?.onPause();
+                setSessionState("paused");
               }
             } else if (e.data === YT_ENDED) fireEndedOnce();
             else if (e.data === YT_BUFFERING) handlers?.onBuffer(true);
@@ -530,8 +605,6 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
   }
   const el = ensureAudio();
   handlers?.onBuffer(true);
-
-  // If we warmed this URL on secondary element, reuse same src on primary
   el.src = url;
   el.volume = volume;
   try {
@@ -540,7 +613,6 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
     handlers?.onBuffer(false);
     return true;
   } catch {
-    // Retry once after short delay (background autoplay quirks)
     await new Promise((r) => setTimeout(r, 200));
     try {
       await el.play();
@@ -555,6 +627,7 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
 }
 
 export async function enginePlay(track: Track) {
+  userPaused = false;
   wantPlay = true;
   completionFired = false;
   nearEndFired = false;
@@ -564,7 +637,6 @@ export async function enginePlay(track: Track) {
   stopPoll();
   handlers?.onBuffer(true);
 
-  // Prefer HTML5 CDN streams — continuous background works far better than YT iframe
   const stream = safeUrl(track.streamUrl || "");
   if (stream && !stream.includes("/api/audio")) {
     const ok = await playViaAudio(track, stream);
@@ -600,38 +672,19 @@ export async function enginePlay(track: Track) {
   handlers?.onError("Couldn't find a playable source for this track.");
 }
 
+/** UI / notification pause — stays paused until user hits play. */
 export function enginePause() {
+  userPaused = true;
   wantPlay = false;
-  void releaseWakeLock();
-  if (mode === "youtube") {
-    try {
-      yt?.pauseVideo();
-    } catch {
-      /* */
-    }
-  } else {
-    audio?.pause();
-  }
+  hardPause();
+  setSessionState("paused");
 }
 
 export async function engineResume() {
+  userPaused = false;
   wantPlay = true;
-  startPlayWatchdog();
-  void requestWakeLock();
-  if (mode === "youtube") {
-    try {
-      yt?.playVideo();
-    } catch {
-      /* */
-    }
-    return;
-  }
-  if (!audio) return;
-  try {
-    await audio.play();
-  } catch {
-    scheduleNetRetry();
-  }
+  await softResume();
+  setSessionState("playing");
 }
 
 export function engineSeek(seconds: number) {
@@ -657,6 +710,7 @@ export function engineSetVolume(v: number) {
 }
 
 export function engineStop() {
+  userPaused = true;
   wantPlay = false;
   completionFired = true;
   stopPlayWatchdog();
@@ -668,6 +722,7 @@ export function engineStop() {
   } catch {
     /* */
   }
+  setSessionState("none");
 }
 
 export async function engineEnterPictureInPicture(): Promise<boolean> {
