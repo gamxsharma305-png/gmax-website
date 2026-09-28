@@ -36,8 +36,10 @@ let wakeLock: WakeLockSentinel | null = null;
 
 /** True while we intend to play (not user-paused). */
 let wantPlay = false;
-/** True after user/OS media-session pause — blocks all auto-resume. */
+/** True after user/notification pause — blocks ALL auto-resume. */
 let userPaused = false;
+/** True only while our code is calling pause() intentionally. */
+let pauseFromCode = false;
 
 let watchTimer: number | null = null;
 let lastWatchPos = 0;
@@ -45,6 +47,7 @@ let stallTicks = 0;
 let completionFired = false;
 let nearEndFired = false;
 let warmedUrl: string | null = null;
+let pauseSettleTimer: number | null = null;
 
 const YT_PLAYING = 1;
 const YT_PAUSED = 2;
@@ -92,9 +95,28 @@ function maybeNearEnd(pos: number, dur: number) {
   }
 }
 
-/** Only auto-resume when we still want playback and user did not pause. */
 function shouldAutoResume(): boolean {
   return wantPlay && !userPaused && !completionFired;
+}
+
+/** Mark as user-paused and never auto-resume until play is pressed. */
+function lockUserPause() {
+  userPaused = true;
+  wantPlay = false;
+  pauseFromCode = true;
+  void releaseWakeLock();
+  if (mode === "youtube") {
+    try {
+      yt?.pauseVideo();
+    } catch {
+      /* */
+    }
+  } else if (audio && !audio.paused) {
+    audio.pause();
+  }
+  pauseFromCode = false;
+  handlers?.onPause();
+  setSessionState("paused");
 }
 
 function startPlayWatchdog() {
@@ -131,10 +153,9 @@ function startPlayWatchdog() {
         return;
       }
     }
-    // Stall recovery only — never override an intentional pause
     if (!playing || (pos > 0.5 && Math.abs(pos - lastWatchPos) < 0.12)) {
       stallTicks += 1;
-      if (stallTicks >= 4) {
+      if (stallTicks >= 5) {
         stallTicks = 0;
         if (shouldAutoResume()) {
           void softResume();
@@ -164,7 +185,7 @@ function scheduleNetRetry() {
     netRetryTimer = null;
     if (!shouldAutoResume() || !audio) return;
     netRetries += 1;
-    if (netRetries > 10) return;
+    if (netRetries > 8) return;
     try {
       void audio.play().catch(() => {
         /* */
@@ -172,7 +193,7 @@ function scheduleNetRetry() {
     } catch {
       /* */
     }
-  }, 350 + netRetries * 250);
+  }, 400 + netRetries * 300);
 }
 
 function ensureAudio() {
@@ -183,6 +204,8 @@ function ensureAudio() {
   el.setAttribute("playsinline", "true");
   el.setAttribute("webkit-playsinline", "true");
   el.setAttribute("preload", "auto");
+  // Important for media session / lock screen on Android Chrome
+  el.setAttribute("controls", "false");
   el.style.cssText =
     "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1";
   document.body.appendChild(el);
@@ -190,27 +213,38 @@ function ensureAudio() {
 
   audio.addEventListener("play", () => {
     netRetries = 0;
-    userPaused = false;
-    wantPlay = true;
+    if (pauseSettleTimer != null) {
+      clearTimeout(pauseSettleTimer);
+      pauseSettleTimer = null;
+    }
+    // Only clear user pause when play actually starts from a resume intent
+    if (wantPlay) userPaused = false;
     handlers?.onPlay();
     void requestWakeLock();
     setSessionState("playing");
   });
 
   audio.addEventListener("pause", () => {
-    // If user paused via notification / UI — stay paused
-    if (userPaused || !wantPlay) {
+    // Our own pause() call
+    if (pauseFromCode || userPaused) {
       handlers?.onPause();
       setSessionState("paused");
       return;
     }
-    // Unexpected pause while we still want play (buffer / OS blip)
-    if (mode === "audio" && !completionFired) {
-      scheduleNetRetry();
-      return;
-    }
-    handlers?.onPause();
-    setSessionState("paused");
+
+    // Android notification often pauses <audio> WITHOUT firing Media Session "pause".
+    // If still paused shortly after, treat as intentional user pause.
+    if (pauseSettleTimer != null) clearTimeout(pauseSettleTimer);
+    pauseSettleTimer = window.setTimeout(() => {
+      pauseSettleTimer = null;
+      if (!audio || !audio.paused || audio.ended || completionFired) return;
+      // Still paused → user / system media notification pause
+      userPaused = true;
+      wantPlay = false;
+      handlers?.onPause();
+      setSessionState("paused");
+      void releaseWakeLock();
+    }, 280);
   });
 
   audio.addEventListener("ended", () => {
@@ -325,27 +359,18 @@ function startYtPoll() {
 function wireMediaSessionActions() {
   if (!("mediaSession" in navigator)) return;
   try {
-    // Play — notification ▶
     navigator.mediaSession.setActionHandler("play", () => {
       userPaused = false;
       wantPlay = true;
       void softResume();
       setSessionState("playing");
     });
-    // Pause — notification ❚❚  (MUST stay paused)
     navigator.mediaSession.setActionHandler("pause", () => {
-      userPaused = true;
-      wantPlay = false;
-      hardPause();
-      handlers?.onPause();
-      setSessionState("paused");
+      lockUserPause();
     });
-    // Stop / dismiss (X on some OEMs)
     navigator.mediaSession.setActionHandler("stop", () => {
-      userPaused = true;
-      wantPlay = false;
+      lockUserPause();
       engineStop();
-      handlers?.onPause();
       setSessionState("none");
     });
     navigator.mediaSession.setActionHandler("previoustrack", () => {
@@ -410,19 +435,6 @@ export function setMediaSessionNav(next: () => void, prev: () => void) {
   wireMediaSessionActions();
 }
 
-function hardPause() {
-  void releaseWakeLock();
-  if (mode === "youtube") {
-    try {
-      yt?.pauseVideo();
-    } catch {
-      /* */
-    }
-  } else {
-    audio?.pause();
-  }
-}
-
 async function softResume() {
   if (userPaused) return;
   wantPlay = true;
@@ -476,7 +488,7 @@ function keepAliveInBackground() {
         /* */
       }
     }
-  }, 2000);
+  }, 2500);
 }
 
 let inited = false;
@@ -560,7 +572,7 @@ async function getYtPlayer(): Promise<YtPlayer> {
           onStateChange: (e: { data: number }) => {
             if (mode !== "youtube") return;
             if (e.data === YT_PLAYING) {
-              userPaused = false;
+              if (wantPlay) userPaused = false;
               handlers?.onPlay();
               handlers?.onBuffer(false);
               startYtPoll();
@@ -647,8 +659,10 @@ export async function enginePlay(track: Track) {
     mode = "youtube";
     try {
       if (audio) {
+        pauseFromCode = true;
         audio.pause();
         audio.removeAttribute("src");
+        pauseFromCode = false;
       }
       const player = await getYtPlayer();
       player.loadVideoById(track.videoId);
@@ -672,12 +686,8 @@ export async function enginePlay(track: Track) {
   handlers?.onError("Couldn't find a playable source for this track.");
 }
 
-/** UI / notification pause — stays paused until user hits play. */
 export function enginePause() {
-  userPaused = true;
-  wantPlay = false;
-  hardPause();
-  setSessionState("paused");
+  lockUserPause();
 }
 
 export async function engineResume() {
@@ -716,7 +726,9 @@ export function engineStop() {
   stopPlayWatchdog();
   stopPoll();
   void releaseWakeLock();
+  pauseFromCode = true;
   audio?.pause();
+  pauseFromCode = false;
   try {
     yt?.pauseVideo();
   } catch {
