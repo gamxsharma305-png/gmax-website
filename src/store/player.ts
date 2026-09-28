@@ -6,6 +6,7 @@ import {
   engineResume,
   engineSeek,
   engineSetVolume,
+  engineWarmNext,
   initEngine,
   setMediaSessionNav,
 } from "@/lib/gmax/engine";
@@ -64,6 +65,20 @@ function isYouTubeTrack(track: Track): boolean {
   return track.provider === "youtube" || Boolean(track.videoId);
 }
 
+function peekNextTrack(): Track | null {
+  const { queue, index, order, shuffle, repeat } = usePlayer.getState();
+  if (!queue.length) return null;
+  const seq = shuffle ? order : queue.map((_, i) => i);
+  let pos = seq.indexOf(index);
+  if (pos < 0) pos = 0;
+  const nextPos = pos + 1;
+  if (nextPos >= seq.length) {
+    if (repeat === "off") return null;
+    return queue[seq[0] ?? 0] ?? null;
+  }
+  return queue[seq[nextPos] ?? 0] ?? null;
+}
+
 function bindEngine() {
   if (engineBound || typeof window === "undefined") return;
   engineBound = true;
@@ -75,12 +90,18 @@ function bindEngine() {
     onPause: () => usePlayer.setState({ isPlaying: false }),
     onEnded: () => {
       consecutiveErrors = 0;
-      window.setTimeout(() => {
-        usePlayer.getState().next();
-      }, 150);
+      // NOTE-style: advance immediately — keep chain alive in background
+      usePlayer.getState().next();
+    },
+    onNearEnd: () => {
+      // Warm next track ~12s before end (NOTE preloader)
+      void warmNext();
     },
     onTime: (position, duration) => {
-      const d = Number.isFinite(duration) && duration > 0 ? duration : usePlayer.getState().duration;
+      const d =
+        Number.isFinite(duration) && duration > 0
+          ? duration
+          : usePlayer.getState().duration;
       usePlayer.setState({ position, duration: d });
     },
     onError: (message) => {
@@ -100,16 +121,10 @@ function bindEngine() {
   );
 }
 
-/**
- * YouTube → keep videoId only (iframe in engine). No /api/audio, no Saavn swap.
- * Saavn / Audius / iTunes → their own streams.
- */
 async function maybeResolve(track: Track, force = false): Promise<Track> {
-  // YouTube: do not resolve proxy — engine plays via iframe
   if (isYouTubeTrack(track)) {
     return {
       ...track,
-      // strip broken proxy URLs so engine uses iframe path
       streamUrl: track.streamUrl?.includes("/api/audio") ? undefined : track.streamUrl,
     };
   }
@@ -122,7 +137,7 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
   const artist = track.artist?.name?.trim() || "";
   const token = ++resolveInflight;
 
-  if (track.provider === "saavn" && title) {
+  if ((track.provider === "saavn" || !track.provider) && title) {
     try {
       const saavn = await resolveSaavnStream(title, artist);
       if (token !== resolveInflight) return track;
@@ -165,7 +180,6 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
           duration: resolved.duration || track.duration,
         };
       }
-      // If resolve only found a YT id, attach it for iframe
       if (resolved?.videoId) {
         return { ...track, videoId: resolved.videoId };
       }
@@ -177,12 +191,40 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
   return track;
 }
 
+async function warmNext() {
+  const t = peekNextTrack();
+  if (!t) return;
+  try {
+    const resolved = await maybeResolve(t, !t.streamUrl);
+    if (resolved.streamUrl && !resolved.streamUrl.includes("/api/audio")) {
+      engineWarmNext(resolved.streamUrl);
+      // Patch queue so start() is instant
+      const q = usePlayer.getState().queue.slice();
+      const i = q.findIndex((x) => x.id === t.id);
+      if (i >= 0) {
+        q[i] = resolved;
+        usePlayer.setState({ queue: q });
+      }
+    } else if (resolved.videoId || resolved.streamUrl) {
+      const q = usePlayer.getState().queue.slice();
+      const i = q.findIndex((x) => x.id === t.id);
+      if (i >= 0) {
+        q[i] = resolved;
+        usePlayer.setState({ queue: q });
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 async function start(track: Track, forceResolve = false) {
   bindEngine();
   usePlayer.setState({
     current: track,
     isLoading: true,
     error: null,
+    isPlaying: true, // optimistic — keeps MediaSession "playing" across advance
     position: 0,
     duration: track.duration || 0,
   });
@@ -212,32 +254,8 @@ async function start(track: Track, forceResolve = false) {
   consecutiveErrors = 0;
   useLibrary.getState().recordPlay(resolved);
 
-  void prefetchNeighbor();
-}
-
-async function prefetchNeighbor() {
-  const { queue, index, order, shuffle } = usePlayer.getState();
-  if (queue.length < 2) return;
-  const seq = shuffle ? order : queue.map((_, i) => i);
-  const pos = seq.indexOf(index);
-  if (pos < 0) return;
-  const nextIndex = seq[(pos + 1) % seq.length];
-  if (nextIndex == null) return;
-  const t = queue[nextIndex];
-  if (!t || isYouTubeTrack(t) || t.streamUrl) return;
-  try {
-    const resolved = await maybeResolve(t, true);
-    if (resolved.streamUrl || resolved.videoId) {
-      const q = usePlayer.getState().queue.slice();
-      const i = q.findIndex((x) => x.id === t.id);
-      if (i >= 0) {
-        q[i] = resolved;
-        usePlayer.setState({ queue: q });
-      }
-    }
-  } catch {
-    /* ignore */
-  }
+  // Prefetch neighbor immediately (NOTE schedule)
+  void warmNext();
 }
 
 export const usePlayer = create<PlayerState>((set, get) => ({
@@ -257,8 +275,13 @@ export const usePlayer = create<PlayerState>((set, get) => ({
 
   playTrack: async (track, opts) => {
     const queue = opts?.tracks?.length ? opts.tracks : [track];
-    const index = Math.max(0, queue.findIndex((t) => t.id === track.id));
-    const order = get().shuffle ? shuffleOrder(queue.length, index) : queue.map((_, i) => i);
+    const index = Math.max(
+      0,
+      queue.findIndex((t) => t.id === track.id),
+    );
+    const order = get().shuffle
+      ? shuffleOrder(queue.length, index)
+      : queue.map((_, i) => i);
     const multi = queue.length > 1;
     consecutiveErrors = 0;
     advancing = false;
@@ -284,9 +307,10 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const { queue, index, order, shuffle, repeat, current } = get();
     if (!queue.length) return;
     advancing = true;
+    // Short lock only — NOTE advances freely; 12s was blocking continuous play
     window.setTimeout(() => {
       advancing = false;
-    }, 12000);
+    }, 2500);
     const done = () => {
       advancing = false;
     };
@@ -310,7 +334,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       set({ index: nextIndex, error: null, isPlaying: true });
       const t = queue[nextIndex];
       if (t) {
-        void start(t, true).finally(done);
+        void start(t, !t.streamUrl).finally(done);
       } else {
         enginePause();
         set({ isPlaying: false });
@@ -388,7 +412,12 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     for (const t of extra) {
       if (!queue.some((q) => q.id === t.id)) queue.push(t);
     }
-    set({ queue, order: get().shuffle ? shuffleOrder(queue.length, get().index) : queue.map((_, i) => i) });
+    set({
+      queue,
+      order: get().shuffle
+        ? shuffleOrder(queue.length, get().index)
+        : queue.map((_, i) => i),
+    });
   },
 
   retry: () => {
