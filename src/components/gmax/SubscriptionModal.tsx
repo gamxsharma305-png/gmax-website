@@ -87,7 +87,6 @@ const SHOWCASE: ShowcaseCard[] = [
   },
 ];
 
-/** Video-style stacked card deck with auto-cycle */
 function AnimatedCardStack() {
   const n = SHOWCASE.length;
   const [active, setActive] = useState(0);
@@ -104,7 +103,6 @@ function AnimatedCardStack() {
     return () => clearInterval(t);
   }, [n]);
 
-  // Order: active on top, then next, then rest
   const order = [0, 1, 2].map((offset) => (active + offset) % n);
 
   return (
@@ -112,21 +110,17 @@ function AnimatedCardStack() {
       {order.map((cardIndex, stackPos) => {
         const card = SHOWCASE[cardIndex]!;
         const Icon = card.Icon;
-        // stackPos 0 = front
         const isFront = stackPos === 0;
 
-        // Exit animation for outgoing front card
         let transform = "";
         let opacity = 1;
         let z = 30 - stackPos;
 
         if (isFront && animating) {
-          // slide left + fade like the video
           transform = "translateX(-72%) translateY(8px) scale(0.92) rotate(-6deg)";
           opacity = 0;
           z = 40;
         } else if (stackPos === 1 && animating) {
-          // second card rises to front
           transform = "translateX(-50%) translateY(0) scale(1)";
           z = 35;
         } else {
@@ -151,7 +145,6 @@ function AnimatedCardStack() {
               background: card.gradient,
             }}
           >
-            {/* Soft grid / shine */}
             <div
               className="pointer-events-none absolute inset-0 opacity-30"
               style={{
@@ -159,7 +152,6 @@ function AnimatedCardStack() {
                   "radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 55%)",
               }}
             />
-
             <div className="relative flex h-full flex-col p-4">
               <div className="flex items-start justify-between">
                 <span className="grid size-11 place-items-center rounded-2xl bg-white/15 text-white backdrop-blur-sm">
@@ -173,7 +165,6 @@ function AnimatedCardStack() {
                   {card.status}
                 </span>
               </div>
-
               <div className="mt-auto">
                 <p className="text-[17px] font-bold leading-tight text-white drop-shadow">
                   {card.title}
@@ -192,8 +183,6 @@ function AnimatedCardStack() {
           </div>
         );
       })}
-
-      {/* Dots */}
       <div className="absolute -bottom-1 left-1/2 z-50 flex -translate-x-1/2 gap-1.5">
         {SHOWCASE.map((c, i) => (
           <button
@@ -227,6 +216,7 @@ export function SubscriptionModal() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [testMode, setTestMode] = useState(false);
 
   useEffect(() => {
     if (!premium.hydrated) premium.hydrate();
@@ -260,6 +250,9 @@ export function SubscriptionModal() {
         throw new Error(data.error || "Could not create order. Add Razorpay keys on Vercel.");
       }
 
+      const isTest = data.keyId.startsWith("rzp_test_");
+      setTestMode(isTest);
+
       const rzp = new window.Razorpay!({
         key: data.keyId,
         amount: data.amount,
@@ -268,6 +261,9 @@ export function SubscriptionModal() {
         description: `${plan.label} · ad-free music`,
         order_id: data.orderId,
         theme: { color: "#1db954" },
+        prefill: isTest
+          ? { name: "Test User", email: "test@gmax.app", contact: "9999999999" }
+          : undefined,
         handler: async (response: {
           razorpay_payment_id: string;
           razorpay_order_id: string;
@@ -432,8 +428,26 @@ export function SubscriptionModal() {
             </p>
           ) : null}
 
+          {/* Test mode notice — real GPay/PhonePe will fail on rzp_test_ keys */}
+          <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100/90">
+            <p className="font-semibold text-amber-200">Razorpay TEST mode</p>
+            <p className="mt-1 text-amber-100/80">
+              Real Google Pay / PhonePe will show “Payment could not be completed”.
+              Use these instead:
+            </p>
+            <ul className="mt-1.5 list-inside list-disc space-y-0.5 text-amber-50/90">
+              <li>
+                <span className="font-medium">UPI ID:</span> success@razorpay
+              </li>
+              <li>
+                <span className="font-medium">Card:</span> 4111 1111 1111 1111 · any CVV · any future expiry
+              </li>
+            </ul>
+          </div>
+
           <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-muted">
-            <Shield size={12} /> Secure payments via Razorpay · UPI, cards, netbanking
+            <Shield size={12} /> Secure payments via Razorpay
+            {testMode ? " · Test keys" : ""}
           </p>
         </div>
 
