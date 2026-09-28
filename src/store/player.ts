@@ -15,6 +15,7 @@ import { resolveVideoId } from "@/lib/gmax/search";
 import { resolveSaavnStream } from "@/lib/gmax/saavn";
 import { resolveAudiusStream } from "@/lib/gmax/audius";
 import { useLibrary } from "./library";
+import { peekOfflineBlob } from "./offline";
 
 type PlayerState = {
   current: Track | null;
@@ -90,11 +91,9 @@ function bindEngine() {
     onPause: () => usePlayer.setState({ isPlaying: false }),
     onEnded: () => {
       consecutiveErrors = 0;
-      // NOTE-style: advance immediately — keep chain alive in background
       usePlayer.getState().next();
     },
     onNearEnd: () => {
-      // Warm next track ~12s before end (NOTE preloader)
       void warmNext();
     },
     onTime: (position, duration) => {
@@ -122,6 +121,16 @@ function bindEngine() {
 }
 
 async function maybeResolve(track: Track, force = false): Promise<Track> {
+  // Offline blob first — works with no network
+  try {
+    const blobUrl = await peekOfflineBlob(track.id);
+    if (blobUrl) {
+      return { ...track, streamUrl: blobUrl, videoId: undefined };
+    }
+  } catch {
+    /* continue online resolve */
+  }
+
   if (isYouTubeTrack(track)) {
     return {
       ...track,
@@ -198,7 +207,6 @@ async function warmNext() {
     const resolved = await maybeResolve(t, !t.streamUrl);
     if (resolved.streamUrl && !resolved.streamUrl.includes("/api/audio")) {
       engineWarmNext(resolved.streamUrl);
-      // Patch queue so start() is instant
       const q = usePlayer.getState().queue.slice();
       const i = q.findIndex((x) => x.id === t.id);
       if (i >= 0) {
@@ -224,7 +232,7 @@ async function start(track: Track, forceResolve = false) {
     current: track,
     isLoading: true,
     error: null,
-    isPlaying: true, // optimistic — keeps MediaSession "playing" across advance
+    isPlaying: true,
     position: 0,
     duration: track.duration || 0,
   });
@@ -253,8 +261,6 @@ async function start(track: Track, forceResolve = false) {
   await enginePlay(resolved);
   consecutiveErrors = 0;
   useLibrary.getState().recordPlay(resolved);
-
-  // Prefetch neighbor immediately (NOTE schedule)
   void warmNext();
 }
 
@@ -307,7 +313,6 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const { queue, index, order, shuffle, repeat, current } = get();
     if (!queue.length) return;
     advancing = true;
-    // Short lock only — NOTE advances freely; 12s was blocking continuous play
     window.setTimeout(() => {
       advancing = false;
     }, 2500);
