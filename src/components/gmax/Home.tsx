@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Compass, Heart, Moon, Play, Search, Target, User } from "lucide-react";
+import { Heart, ListMusic, Moon, Play, Search, Target, User } from "lucide-react";
 import { FEATURED_QUERY, randomQueryFor } from "@/lib/gmax/catalog";
 import { greetingFor } from "@/lib/gmax/text";
 import { searchCatalog } from "@/lib/gmax/search";
@@ -11,7 +11,7 @@ import { TrackRow } from "./TrackRow";
 
 const ACTIONS = [
   { id: "liked", label: "Liked", Icon: Heart },
-  { id: "discover", label: "Discover", Icon: Compass },
+  { id: "playlist", label: "Playlist", Icon: ListMusic },
   { id: "chill", label: "Chill", Icon: Moon },
   { id: "focus", label: "Focus", Icon: Target },
 ] as const;
@@ -20,11 +20,13 @@ export function Home() {
   const profile = useLibrary((s) => s.profile);
   const recents = useLibrary((s) => s.recents);
   const liked = useLibrary((s) => s.liked);
+  const playlists = useLibrary((s) => s.playlists);
   const playTrack = usePlayer((s) => s.playTrack);
   const currentId = usePlayer((s) => s.current?.id);
   const isPlaying = usePlayer((s) => s.isPlaying);
   const setTab = useUi((s) => s.setTab);
   const openSettings = useUi((s) => s.openSettings);
+  const openPlaylist = useUi((s) => s.openPlaylist);
   const setAddingTrack = useUi((s) => s.setAddingTrack);
 
   const [featured, setFeatured] = useState<Track[]>([]);
@@ -67,6 +69,22 @@ export function Home() {
       else setTab("library");
       return;
     }
+
+    // Playlist shortcut: play most recent user playlist that has tracks
+    if (id === "playlist") {
+      const withTracks = [...playlists]
+        .filter((p) => p.tracks.length > 0)
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      const pick = withTracks[0];
+      if (pick?.tracks[0]) {
+        await playTrack(pick.tracks[0], { tracks: pick.tracks, label: pick.name });
+        return;
+      }
+      // No songs yet — open library playlists (create / pick)
+      setTab("library");
+      return;
+    }
+
     const query = randomQueryFor(id);
     if (!query) return;
     setPending(id);
@@ -125,24 +143,8 @@ export function Home() {
           ))}
         </div>
 
-        <div className="mb-4 flex items-center justify-between rounded-lg border border-line bg-glass px-5 py-5">
-          <div>
-            <p className="text-[16px] font-medium text-fg/90">A calmer you</p>
-            <p className="text-[16px] font-medium text-fg/90">A softer tomorrow.</p>
-          </div>
-          <button
-            type="button"
-            className="grid size-12 place-items-center rounded-full bg-fg text-bg"
-            onClick={() => {
-              if (featured[0]) void playTrack(featured[0], { tracks: featured, label: "A calmer you" });
-            }}
-            aria-label="Play featured"
-          >
-            <Play size={20} fill="currentColor" />
-          </button>
-        </div>
-
-        <div className="mb-8 grid grid-cols-4 gap-2">
+        {/* Liked + Playlist shortcuts first */}
+        <div className="mb-4 grid grid-cols-4 gap-2">
           {ACTIONS.map((a) => (
             <button
               key={a.id}
@@ -160,6 +162,24 @@ export function Home() {
               <span className="text-[10px] text-muted">{a.label}</span>
             </button>
           ))}
+        </div>
+
+        {/* Auto / featured mix below Liked & Playlist */}
+        <div className="mb-6 flex items-center justify-between rounded-lg border border-line bg-glass px-5 py-5">
+          <div>
+            <p className="text-[16px] font-medium text-fg/90">A calmer you</p>
+            <p className="text-[16px] font-medium text-fg/90">A softer tomorrow.</p>
+          </div>
+          <button
+            type="button"
+            className="grid size-12 place-items-center rounded-full bg-fg text-bg"
+            onClick={() => {
+              if (featured[0]) void playTrack(featured[0], { tracks: featured, label: "A calmer you" });
+            }}
+            aria-label="Play featured"
+          >
+            <Play size={20} fill="currentColor" />
+          </button>
         </div>
 
         <div className="mb-2 flex items-center justify-between px-1">

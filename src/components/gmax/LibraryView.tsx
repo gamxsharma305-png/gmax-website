@@ -148,34 +148,10 @@ export function LibraryView() {
       <div className="gmax-scroll px-4">
         {filter === "Playlists" ? (
           <>
-            <p className="mb-2 mt-1 text-[10px] font-medium tracking-[0.22em] text-faint">AUTO MIXES</p>
-            <p className="mb-3 text-[12px] text-muted">
-              Tap to play · long-press / hold Save to keep in library
+            {/* Liked + your playlists FIRST */}
+            <p className="mb-2 mt-1 text-[10px] font-medium tracking-[0.22em] text-faint">
+              YOUR PLAYLISTS
             </p>
-            <div className="mb-5 grid grid-cols-2 gap-2">
-              {AUTO_PLAYLISTS.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  disabled={autoLoading === m.id}
-                  className="rounded-md border border-line bg-glass px-3 py-3 text-left disabled:opacity-50"
-                  style={{ borderLeftWidth: 3, borderLeftColor: m.color }}
-                  onClick={() => void playAutoMix(m.id, m.query, m.name, false)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    void playAutoMix(m.id, m.query, m.name, true);
-                  }}
-                >
-                  <span className="block text-[14px] font-medium">{m.name}</span>
-                  <span className="text-[11px] text-muted">
-                    {autoLoading === m.id ? "Loading…" : m.description}
-                  </span>
-                </button>
-              ))}
-            </div>
-            {autoError ? <p className="mb-3 text-sm text-red-400">{autoError}</p> : null}
-
-            <p className="mb-2 text-[10px] font-medium tracking-[0.22em] text-faint">YOUR PLAYLISTS</p>
             {allPlaylists.map((p) => (
               <div key={p.id} className="flex items-center">
                 <button
@@ -183,7 +159,8 @@ export function LibraryView() {
                   className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left"
                   onClick={() => {
                     if (p.id === "liked") {
-                      if (p.tracks[0]) void playTrack(p.tracks[0], { tracks: p.tracks, label: p.name });
+                      if (p.tracks[0])
+                        void playTrack(p.tracks[0], { tracks: p.tracks, label: p.name });
                       return;
                     }
                     touchPlaylist(p.id);
@@ -212,6 +189,36 @@ export function LibraryView() {
                 ) : null}
               </div>
             ))}
+
+            {/* Auto mixes BELOW */}
+            <p className="mb-2 mt-6 text-[10px] font-medium tracking-[0.22em] text-faint">
+              AUTO MIXES
+            </p>
+            <p className="mb-3 text-[12px] text-muted">
+              Tap to play · long-press / hold Save to keep in library
+            </p>
+            <div className="mb-5 grid grid-cols-2 gap-2">
+              {AUTO_PLAYLISTS.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  disabled={autoLoading === m.id}
+                  className="rounded-md border border-line bg-glass px-3 py-3 text-left disabled:opacity-50"
+                  style={{ borderLeftWidth: 3, borderLeftColor: m.color }}
+                  onClick={() => void playAutoMix(m.id, m.query, m.name, false)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    void playAutoMix(m.id, m.query, m.name, true);
+                  }}
+                >
+                  <span className="block text-[14px] font-medium">{m.name}</span>
+                  <span className="text-[11px] text-muted">
+                    {autoLoading === m.id ? "Loading…" : m.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {autoError ? <p className="mb-3 text-sm text-red-400">{autoError}</p> : null}
           </>
         ) : null}
 
