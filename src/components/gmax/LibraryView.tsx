@@ -67,10 +67,7 @@ export function LibraryView() {
     };
   }, [liked, playlists, recents, offlineTracks]);
 
-  /**
-   * Tap auto mix → build long list (esp. Mega Punjabi) → open playlist view to scroll.
-   * Also starts playback so it feels alive like Spotify.
-   */
+  /** Every auto mix: multi-query mega list → open scrollable playlist + play. */
   async function openAutoMix(id: string, query: string, label: string) {
     setAutoError(null);
     setAutoLoading(id);
@@ -78,9 +75,8 @@ export function LibraryView() {
       let tracks;
       let mixName = label;
 
-      // Fat multi-query mix for Punjabi (and any mix with extraQueries)
       const built = await buildAutoMix(id, { targetCount: 70 });
-      if (built && built.tracks.length >= 8) {
+      if (built && built.tracks.length >= 6) {
         tracks = built.tracks;
         mixName = built.name;
       } else {
@@ -93,11 +89,9 @@ export function LibraryView() {
         return;
       }
 
-      // Upsert library playlist so user can scroll the full list (Spotify-style)
       const existing = useLibrary.getState().playlists.find((p) => p.name === mixName);
       let playlistId: string;
       if (existing) {
-        // Refresh tracks on each open for a fresh mega list
         const next = useLibrary.getState().playlists.map((p) =>
           p.id === existing.id
             ? {
@@ -240,7 +234,7 @@ export function LibraryView() {
               AUTO MIXES
             </p>
             <p className="mb-3 text-[12px] text-muted">
-              Tap to open full playlist · scroll & play like Spotify
+              Tap any mix → full scrollable playlist · 40–70 tracks
             </p>
             <div className="mb-5 grid grid-cols-2 gap-2">
               {AUTO_PLAYLISTS.map((m) => (
@@ -254,11 +248,7 @@ export function LibraryView() {
                 >
                   <span className="block text-[14px] font-medium">{m.name}</span>
                   <span className="text-[11px] text-muted">
-                    {autoLoading === m.id
-                      ? "Loading mega list…"
-                      : m.id === "auto-punjabi"
-                        ? "50+ Punjabi hits · scroll"
-                        : m.description}
+                    {autoLoading === m.id ? "Loading mega list…" : `${m.description} · scroll`}
                   </span>
                 </button>
               ))}
