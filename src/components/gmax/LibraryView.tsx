@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { AUTO_PLAYLISTS } from "@/lib/gmax/catalog";
+import { buildAutoMix } from "@/lib/gmax/autoMix";
 import { trackArtist, trackTitle } from "@/lib/gmax/normalize";
 import { searchCatalog } from "@/lib/gmax/search";
 import { likedPlaylist, useLibrary } from "@/store/library";
@@ -66,26 +67,61 @@ export function LibraryView() {
     };
   }, [liked, playlists, recents, offlineTracks]);
 
-  async function playAutoMix(id: string, query: string, label: string, save: boolean) {
+  /**
+   * Tap auto mix → build long list (esp. Mega Punjabi) → open playlist view to scroll.
+   * Also starts playback so it feels alive like Spotify.
+   */
+  async function openAutoMix(id: string, query: string, label: string) {
     setAutoError(null);
     setAutoLoading(id);
     try {
-      const res = await searchCatalog(query, { limit: 25 });
-      const tracks = res.tracks;
+      let tracks;
+      let mixName = label;
+
+      // Fat multi-query mix for Punjabi (and any mix with extraQueries)
+      const built = await buildAutoMix(id, { targetCount: 70 });
+      if (built && built.tracks.length >= 8) {
+        tracks = built.tracks;
+        mixName = built.name;
+      } else {
+        const res = await searchCatalog(query, { limit: 40 });
+        tracks = res.tracks;
+      }
+
       if (!tracks.length) {
         setAutoError("No songs found for this mix. Try again.");
         return;
       }
-      if (save) {
-        const existing = playlists.find((p) => p.name === label);
-        if (existing) {
-          openPlaylist(existing.id);
-        } else {
-          const p = createPlaylist(label, tracks);
-          openPlaylist(p.id);
+
+      // Upsert library playlist so user can scroll the full list (Spotify-style)
+      const existing = useLibrary.getState().playlists.find((p) => p.name === mixName);
+      let playlistId: string;
+      if (existing) {
+        // Refresh tracks on each open for a fresh mega list
+        const next = useLibrary.getState().playlists.map((p) =>
+          p.id === existing.id
+            ? {
+                ...p,
+                tracks,
+                coverImageUrl: tracks[0]?.albumImageUrl || p.coverImageUrl,
+                updatedAt: Date.now(),
+              }
+            : p,
+        );
+        try {
+          localStorage.setItem("gmax.playlists", JSON.stringify(next));
+        } catch {
+          /* */
         }
+        useLibrary.setState({ playlists: next });
+        playlistId = existing.id;
+      } else {
+        const p = createPlaylist(mixName, tracks);
+        playlistId = p.id;
       }
-      if (tracks[0]) void playTrack(tracks[0], { tracks, label });
+
+      openPlaylist(playlistId);
+      if (tracks[0]) void playTrack(tracks[0], { tracks, label: mixName });
     } catch {
       setAutoError("Could not load mix. Check network.");
     } finally {
@@ -204,7 +240,7 @@ export function LibraryView() {
               AUTO MIXES
             </p>
             <p className="mb-3 text-[12px] text-muted">
-              Tap to play · long-press / hold Save to keep in library
+              Tap to open full playlist · scroll & play like Spotify
             </p>
             <div className="mb-5 grid grid-cols-2 gap-2">
               {AUTO_PLAYLISTS.map((m) => (
@@ -214,15 +250,15 @@ export function LibraryView() {
                   disabled={autoLoading === m.id}
                   className="rounded-md border border-line bg-glass px-3 py-3 text-left disabled:opacity-50"
                   style={{ borderLeftWidth: 3, borderLeftColor: m.color }}
-                  onClick={() => void playAutoMix(m.id, m.query, m.name, false)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    void playAutoMix(m.id, m.query, m.name, true);
-                  }}
+                  onClick={() => void openAutoMix(m.id, m.query, m.name)}
                 >
                   <span className="block text-[14px] font-medium">{m.name}</span>
                   <span className="text-[11px] text-muted">
-                    {autoLoading === m.id ? "Loading…" : m.description}
+                    {autoLoading === m.id
+                      ? "Loading mega list…"
+                      : m.id === "auto-punjabi"
+                        ? "50+ Punjabi hits · scroll"
+                        : m.description}
                   </span>
                 </button>
               ))}
@@ -277,7 +313,7 @@ export function LibraryView() {
                       type="button"
                       className="grid size-10 place-items-center text-faint"
                       onClick={() => void removeOffline(t.id)}
-                      aria-label={`Remove ${trackTitle(t)} offline"`}
+                      aria-label={`Remove ${trackTitle(t)} offline`}
                     >
                       <Trash2 size={16} />
                     </button>

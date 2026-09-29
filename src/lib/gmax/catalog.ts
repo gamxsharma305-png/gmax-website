@@ -15,15 +15,46 @@ export const BROWSE_CATEGORIES: Category[] = [
   { id: "c8", name: "Rock", color: "#a34545", query: "rock classics" },
 ];
 
-/** One-tap auto playlists by genre / mood — filled live from search. */
+/** One-tap auto playlists — primary query + optional multi-queries for fat mixes. */
 export const AUTO_PLAYLISTS: {
   id: string;
   name: string;
   color: string;
   query: string;
   description: string;
+  /** Extra searches merged for long Spotify-style lists */
+  extraQueries?: string[];
 }[] = [
-  { id: "auto-punjabi", name: "Punjabi Hits", color: "#e8b84a", query: "punjabi hits songs", description: "Top Punjabi" },
+  {
+    id: "auto-punjabi",
+    name: "Mega Punjabi Hits",
+    color: "#e8b84a",
+    query: "punjabi hits songs",
+    description: "Biggest Punjabi hits",
+    // Inspired by Spotify Mega Punjabi Hits — diverse artists, long scrollable mix
+    extraQueries: [
+      "Diljit Dosanjh hits",
+      "Sidhu Moose Wala best songs",
+      "Shubh punjabi songs",
+      "AP Dhillon hits",
+      "Karan Aujla songs",
+      "Guru Randhawa hits",
+      "Yo Yo Honey Singh hits",
+      "Ammy Virk punjabi",
+      "Jass Manak songs",
+      "Parmish Verma hits",
+      "Brown Rang Honey Singh",
+      "Excuses AP Dhillon",
+      "Lover Diljit Dosanjh",
+      "So High Sidhu Moose Wala",
+      "No Love Shubh",
+      "8 Parche Baani Sandhu",
+      "East Side Flow Sidhu",
+      "With You AP Dhillon",
+      "Insane AP Dhillon",
+      "Softly Karan Aujla",
+    ],
+  },
   { id: "auto-hindi", name: "Hindi Hits", color: "#e07a5f", query: "bollywood hindi hits", description: "Bollywood" },
   { id: "auto-love", name: "Love Songs", color: "#e056a0", query: "romantic love songs hindi", description: "Romantic" },
   { id: "auto-lofi", name: "Lo-fi Chill", color: "#7c9cbf", query: "lofi chill beats", description: "Study & chill" },
@@ -45,7 +76,6 @@ export const ACTION_QUERIES: Record<string, string[]> = {
     "new music this month",
     "most played songs today",
   ],
-  // Chill → Dean × Luffy style: Indian / Hindi soft + Luffy vibes. Fresh mix every tap.
   chill: [
     "Dean Luffy hindi songs",
     "Dean and Luffy indian chill",
@@ -56,7 +86,6 @@ export const ACTION_QUERIES: Record<string, string[]> = {
     "Dean Luffy romantic hindi",
     "soft indian songs Luffy style",
   ],
-  // Focus → Punjabi heat: Sidhu Moose Wala, Shubh, top Punjabi. Instant play on tap.
   focus: [
     "Sidhu Moose Wala hits",
     "Sidhu Moose Wala best songs",
