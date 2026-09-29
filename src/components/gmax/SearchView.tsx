@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Search, X } from "lucide-react";
 import { searchCatalog } from "@/lib/gmax/search";
-import { isSpotifyTrackQuery, resolveSpotifyTrack } from "@/lib/gmax/spotify";
+import { resolveSpotifyPlayback, searchSpotifyByName } from "@/lib/gmax/spotify";
 import type { Track } from "@/lib/gmax/types";
 import { usePlayer } from "@/store/player";
 import { useUi } from "@/store/ui";
@@ -17,6 +17,7 @@ export function SearchView() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"spotify" | "all">("spotify");
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -32,35 +33,60 @@ export function SearchView() {
     setLoading(true);
     timer.current = window.setTimeout(async () => {
       try {
-        // Spotify track URL / ID → RapidAPI resolve → HTML5 stream
-        if (isSpotifyTrackQuery(query)) {
-          const r = await resolveSpotifyTrack(query);
-          if ("error" in r) {
+        if (mode === "spotify") {
+          // Name only — Spotify-style results (no link paste)
+          const r = await searchSpotifyByName(query, 25);
+          if (r.error && !r.tracks.length) {
             setError(r.error);
             setTracks([]);
           } else {
             setError(null);
-            setTracks([r.track]);
+            setTracks(r.tracks);
           }
-          setLoading(false);
-          return;
+        } else {
+          const res = await searchCatalog(query, { limit: 30 });
+          setTracks(res.tracks);
+          setError(null);
         }
-
-        const res = await searchCatalog(query, { limit: 30 });
-        setTracks(res.tracks);
-        setError(null);
       } catch {
         setError("Search failed. Check network.");
         setTracks([]);
       } finally {
         setLoading(false);
       }
-    }, 380);
+    }, 400);
 
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
     };
-  }, [q]);
+  }, [q, mode]);
+
+  async function onPlay(track: Track, list: Track[]) {
+    // Spotify / needs full stream via RapidAPI
+    if (
+      track.provider === "spotify" ||
+      track.id.startsWith("spotify:") ||
+      (!track.streamUrl && !track.videoId)
+    ) {
+      const resolved = await resolveSpotifyPlayback(track);
+      if ("error" in resolved) {
+        setError(resolved.error);
+        // still try normal play path as fallback
+        await playTrack(track, { tracks: list, label: "Search" });
+        return;
+      }
+      const enriched: Track = {
+        ...track,
+        streamUrl: resolved.streamUrl,
+        duration: resolved.duration || track.duration,
+      };
+      const newList = list.map((t) => (t.id === track.id ? enriched : t));
+      setTracks(newList);
+      await playTrack(enriched, { tracks: newList, label: "Search" });
+      return;
+    }
+    await playTrack(track, { tracks: list, label: "Search" });
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -71,7 +97,7 @@ export function SearchView() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Songs, artists, or Spotify track link…"
+            placeholder="Song or artist name…"
             className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-faint"
             autoCapitalize="off"
             autoCorrect="off"
@@ -82,9 +108,26 @@ export function SearchView() {
             </button>
           ) : null}
         </div>
-        <p className="mt-2 text-[11px] text-muted">
-          Paste a Spotify track link for RapidAPI stream · or search normally
-        </p>
+        <div className="mt-2 flex gap-2">
+          <button
+            type="button"
+            onClick={() => setMode("spotify")}
+            className={`rounded-full px-3 py-1 text-[11px] font-medium ${
+              mode === "spotify" ? "bg-fg text-bg" : "border border-line text-muted"
+            }`}
+          >
+            Spotify
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("all")}
+            className={`rounded-full px-3 py-1 text-[11px] font-medium ${
+              mode === "all" ? "bg-fg text-bg" : "border border-line text-muted"
+            }`}
+          >
+            All sources
+          </button>
+        </div>
       </div>
 
       <div className="gmax-scroll px-4 pb-4">
@@ -94,7 +137,7 @@ export function SearchView() {
           </div>
         ) : null}
         {error ? (
-          <div className="rounded-md border border-line bg-glass p-3 text-sm text-red-400">
+          <div className="mb-2 rounded-md border border-line bg-glass p-3 text-sm text-red-400">
             {error}
           </div>
         ) : null}
@@ -105,9 +148,7 @@ export function SearchView() {
           <TrackRow
             key={t.id}
             track={t}
-            onPress={(track) =>
-              void playTrack(track, { tracks, label: "Search" })
-            }
+            onPress={(track) => void onPlay(track, tracks)}
             onMore={setAddingTrack}
             isPlaying={currentId === t.id && isPlaying}
           />
