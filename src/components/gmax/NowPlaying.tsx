@@ -80,10 +80,10 @@ export function NowPlaying() {
     void offlineHydrate();
   }, [offlineHydrate]);
 
-  // Fetch lyrics when track changes or lyrics panel opens
   useEffect(() => {
     if (!current) {
       setLyrics(null);
+      setShowLyrics(false);
       return;
     }
     let cancelled = false;
@@ -173,10 +173,20 @@ export function NowPlaying() {
     setToast(`Sleep timer: ${mins} min`);
   }
 
-  function toggleLyricsView() {
-    setShowLyrics((v) => !v);
+  function openLyrics() {
+    setShowLyrics(true);
     setShowQueue(false);
     setShowSleep(false);
+    setToast(lyrics ? "Lyrics" : "Lyrics not available");
+  }
+
+  function closeLyrics() {
+    setShowLyrics(false);
+  }
+
+  function toggleLyricsView() {
+    if (showLyrics) closeLyrics();
+    else openLyrics();
   }
 
   return (
@@ -210,17 +220,35 @@ export function NowPlaying() {
           </button>
         </div>
 
-        {/* Artwork ↔ Lyrics flip (tap cover or mic) — like reference video */}
-        <button
-          type="button"
-          onClick={toggleLyricsView}
-          className="mx-auto mb-5 aspect-square w-full max-w-[320px] overflow-hidden rounded-2xl shadow-[0_24px_60px_rgb(0_0_0/0.55)] text-left"
-          aria-label={showLyrics ? "Show artwork" : "Show lyrics"}
-        >
-          {showLyrics ? (
-            <div className="flex size-full flex-col bg-[#e8eef8] p-5 text-slate-800">
+        {/* Cover / Lyrics — clear switch (not buried in cache) */}
+        <div className="relative mx-auto mb-5 aspect-square w-full max-w-[320px]">
+          {!showLyrics ? (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={openLyrics}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") openLyrics();
+              }}
+              className="size-full cursor-pointer overflow-hidden rounded-2xl shadow-[0_24px_60px_rgb(0_0_0/0.55)] outline-none ring-offset-2 ring-offset-bg focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <Artwork src={current.albumImageUrl} title={title} className="pointer-events-none size-full text-5xl" />
+              <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-[11px] font-medium text-white backdrop-blur-sm">
+                Tap for lyrics
+              </div>
+            </div>
+          ) : (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={closeLyrics}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") closeLyrics();
+              }}
+              className="flex size-full cursor-pointer flex-col overflow-hidden rounded-2xl bg-[#e8eef8] p-5 text-slate-800 shadow-[0_24px_60px_rgb(0_0_0/0.35)] outline-none"
+            >
               <p className="mb-2 text-center text-3xl leading-none text-slate-400">”</p>
-              <div className="gmax-scroll min-h-0 flex-1 overflow-y-auto">
+              <div className="min-h-0 flex-1 overflow-y-auto">
                 {lyricsLoading ? (
                   <p className="text-center text-sm text-slate-500">Loading lyrics…</p>
                 ) : lyrics ? (
@@ -233,10 +261,8 @@ export function NowPlaying() {
               </div>
               <p className="mt-2 text-center text-[10px] text-slate-400">Tap to show cover</p>
             </div>
-          ) : (
-            <Artwork src={current.albumImageUrl} title={title} className="size-full text-5xl" />
           )}
-        </button>
+        </div>
 
         <div className="mb-3 text-center">
           <p className="truncate font-display text-2xl font-semibold">{title}</p>
@@ -391,9 +417,7 @@ export function NowPlaying() {
           </div>
 
           {busyDl ? (
-            <p className="mt-2 text-center text-[11px] text-muted">
-              Saving offline… {dlProgress}%
-            </p>
+            <p className="mt-2 text-center text-[11px] text-muted">Saving offline… {dlProgress}%</p>
           ) : null}
           {sleepLeft != null ? (
             <p className="mt-2 text-center text-[11px] text-accent">
@@ -441,7 +465,7 @@ export function NowPlaying() {
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-sm font-medium">Up Next</p>
                 <button type="button" onClick={() => setShowQueue(false)}>
-                  <X size={14} className="text-muted" />
+                  <X size={14} />
                 </button>
               </div>
               {upcoming.length === 0 ? (

@@ -38,6 +38,20 @@ function loadRazorpayScript(): Promise<boolean> {
   });
 }
 
+function deviceId(): string {
+  try {
+    const k = "gmax.deviceId";
+    let id = localStorage.getItem(k);
+    if (!id) {
+      id = "web-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem(k, id);
+    }
+    return id;
+  } catch {
+    return "web-anon";
+  }
+}
+
 type ShowcaseCard = {
   id: string;
   title: string;
@@ -111,11 +125,9 @@ function AnimatedCardStack() {
         const card = SHOWCASE[cardIndex]!;
         const Icon = card.Icon;
         const isFront = stackPos === 0;
-
         let transform = "";
         let opacity = 1;
         let z = 30 - stackPos;
-
         if (isFront && animating) {
           transform = "translateX(-72%) translateY(8px) scale(0.92) rotate(-6deg)";
           opacity = 0;
@@ -130,7 +142,6 @@ function AnimatedCardStack() {
           transform = `translateX(${x}%) translateY(${y}px) scale(${scale})`;
           opacity = 1 - stackPos * 0.08;
         }
-
         return (
           <div
             key={`${card.id}-${stackPos}-${active}`}
@@ -145,66 +156,23 @@ function AnimatedCardStack() {
               background: card.gradient,
             }}
           >
-            <div
-              className="pointer-events-none absolute inset-0 opacity-30"
-              style={{
-                backgroundImage:
-                  "radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 55%)",
-              }}
-            />
             <div className="relative flex h-full flex-col p-4">
               <div className="flex items-start justify-between">
-                <span className="grid size-11 place-items-center rounded-2xl bg-white/15 text-white backdrop-blur-sm">
+                <span className="grid size-11 place-items-center rounded-2xl bg-white/15 text-white">
                   <Icon size={22} />
                 </span>
-                <span className="rounded-full bg-black/25 px-2.5 py-1 text-[10px] font-semibold text-white/90 backdrop-blur-sm">
-                  <span
-                    className="mr-1 inline-block size-1.5 rounded-full"
-                    style={{ background: card.statusOn ? "#4ade80" : "#94a3b8" }}
-                  />
+                <span className="rounded-full bg-black/25 px-2.5 py-1 text-[10px] font-semibold text-white/90">
                   {card.status}
                 </span>
               </div>
               <div className="mt-auto">
-                <p className="text-[17px] font-bold leading-tight text-white drop-shadow">
-                  {card.title}
-                </p>
+                <p className="text-[17px] font-bold text-white">{card.title}</p>
                 <p className="mt-0.5 text-[12px] text-white/80">{card.subtitle}</p>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-white/60">
-                    GMAX Premium
-                  </span>
-                  <span className="rounded-full bg-white/95 px-3 py-1 text-[11px] font-bold text-slate-900">
-                    Included
-                  </span>
-                </div>
               </div>
             </div>
           </div>
         );
       })}
-      <div className="absolute -bottom-1 left-1/2 z-50 flex -translate-x-1/2 gap-1.5">
-        {SHOWCASE.map((c, i) => (
-          <button
-            key={c.id}
-            type="button"
-            aria-label={`Show ${c.title}`}
-            onClick={() => {
-              if (i === active || animating) return;
-              setAnimating(true);
-              window.setTimeout(() => {
-                setActive(i);
-                setAnimating(false);
-              }, 280);
-            }}
-            className="size-1.5 rounded-full transition-all"
-            style={{
-              background: i === active ? "var(--color-accent, #1db954)" : "rgba(255,255,255,0.25)",
-              width: i === active ? 14 : 6,
-            }}
-          />
-        ))}
-      </div>
     </div>
   );
 }
@@ -216,7 +184,6 @@ export function SubscriptionModal() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const [testMode, setTestMode] = useState(false);
 
   useEffect(() => {
     if (!premium.hydrated) premium.hydrate();
@@ -224,12 +191,41 @@ export function SubscriptionModal() {
 
   const plan = PREMIUM_PLANS.find((p) => p.id === selected)!;
 
+  /** INSTGMAX style: Payment Page link (no API keys). Fallback: Checkout if keys exist. */
   const startPay = async () => {
     setError(null);
     setBusy(true);
     try {
+      const did = deviceId();
+
+      // 1) Register pending + get payment page URL (no keys)
+      const pendRes = await fetch("/api/razorpay/pending", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ planId: selected, deviceId: did }),
+      });
+      const pend = (await pendRes.json()) as {
+        success?: boolean;
+        paymentPageUrl?: string | null;
+        error?: string;
+        hint?: string;
+      };
+
+      if (pend.paymentPageUrl) {
+        // Open Razorpay hosted Payment Page (INSTGMAX method)
+        window.open(pend.paymentPageUrl, "_blank", "noopener,noreferrer");
+        setError(
+          "Payment page opened. Pay there, then return here — Premium unlocks via webhook (up to ~1 min).",
+        );
+        setBusy(false);
+        // Poll local premium after return
+        window.setTimeout(() => premium.hydrate(), 8000);
+        return;
+      }
+
+      // 2) Fallback: standard Checkout if RAZORPAY_KEY_ID is set
       const ok = await loadRazorpayScript();
-      if (!ok) throw new Error("Could not load Razorpay. Check network.");
+      if (!ok) throw new Error("Could not load Razorpay");
 
       const res = await fetch("/api/razorpay/create-order", {
         method: "POST",
@@ -243,15 +239,15 @@ export function SubscriptionModal() {
         amount?: number;
         currency?: string;
         keyId?: string;
-        planId?: PlanId;
       };
 
       if (!res.ok || !data.success || !data.orderId || !data.keyId) {
-        throw new Error(data.error || "Could not create order. Add Razorpay keys on Vercel.");
+        throw new Error(
+          pend.hint ||
+            data.error ||
+            "Add Razorpay Payment Page links (RAZORPAY_PAYMENT_PAGE_29/49/59) or API keys on Vercel",
+        );
       }
-
-      const isTest = data.keyId.startsWith("rzp_test_");
-      setTestMode(isTest);
 
       const rzp = new window.Razorpay!({
         key: data.keyId,
@@ -261,9 +257,6 @@ export function SubscriptionModal() {
         description: `${plan.label} · ad-free music`,
         order_id: data.orderId,
         theme: { color: "#1db954" },
-        prefill: isTest
-          ? { name: "Test User", email: "test@gmax.app", contact: "9999999999" }
-          : undefined,
         handler: async (response: {
           razorpay_payment_id: string;
           razorpay_order_id: string;
@@ -273,10 +266,7 @@ export function SubscriptionModal() {
             const v = await fetch("/api/razorpay/verify", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                ...response,
-                planId: selected,
-              }),
+              body: JSON.stringify({ ...response, planId: selected }),
             });
             const vr = (await v.json()) as { success?: boolean; error?: string };
             if (!v.ok || !vr.success) {
@@ -287,16 +277,13 @@ export function SubscriptionModal() {
             premium.grant(selected, response.razorpay_payment_id);
             setSuccess(true);
           } catch {
-            setError("Verification failed. Contact support with payment ID.");
+            setError("Verification failed");
           } finally {
             setBusy(false);
           }
         },
-        modal: {
-          ondismiss: () => setBusy(false),
-        },
+        modal: { ondismiss: () => setBusy(false) },
       });
-
       rzp.open();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Payment failed");
@@ -308,7 +295,7 @@ export function SubscriptionModal() {
     return (
       <div className="absolute inset-0 z-50 flex items-end justify-center bg-black/70 p-4 sm:items-center">
         <div className="w-full max-w-md overflow-hidden rounded-3xl border border-line bg-raised shadow-2xl">
-          <div className="relative bg-gradient-to-br from-accent/30 via-raised to-bg px-6 pb-8 pt-10 text-center">
+          <div className="relative px-6 pb-8 pt-10 text-center">
             <button
               type="button"
               onClick={closeOverlay}
@@ -316,16 +303,10 @@ export function SubscriptionModal() {
             >
               <X size={18} />
             </button>
-            <div className="mx-auto mb-4 grid size-16 place-items-center rounded-2xl bg-accent text-bg shadow-lg">
+            <div className="mx-auto mb-4 grid size-16 place-items-center rounded-2xl bg-accent text-bg">
               <Crown size={32} />
             </div>
             <h2 className="text-2xl font-bold">You're Premium</h2>
-            <p className="mt-2 text-sm text-muted">
-              Enjoy HQ music, playlists & ad-free listening.
-              {premium.expiresAt
-                ? ` Valid till ${new Date(premium.expiresAt).toLocaleDateString()}`
-                : ""}
-            </p>
             <button
               type="button"
               onClick={closeOverlay}
@@ -347,7 +328,6 @@ export function SubscriptionModal() {
             type="button"
             onClick={closeOverlay}
             className="absolute right-4 top-4 grid size-9 place-items-center rounded-full bg-lift"
-            aria-label="Close"
           >
             <X size={18} />
           </button>
@@ -357,14 +337,13 @@ export function SubscriptionModal() {
             </span>
             <div>
               <h2 className="text-lg font-bold">GMAX Premium</h2>
-              <p className="text-[12px] text-muted">Cards cycle · pick a plan below</p>
+              <p className="text-[12px] text-muted">₹29 · ₹49 · ₹59 · Payment Page / Checkout</p>
             </div>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 pb-4">
           <AnimatedCardStack />
-
           <ul className="mt-10 space-y-2.5">
             {PREMIUM_FEATURES.map((f) => (
               <li key={f.title} className="flex gap-3 rounded-xl bg-raised px-3 py-2.5">
@@ -390,64 +369,34 @@ export function SubscriptionModal() {
                   key={p.id}
                   type="button"
                   onClick={() => setSelected(p.id)}
-                  className={`relative flex items-center justify-between rounded-2xl border px-4 py-3.5 text-left transition ${
+                  className={`relative flex items-center justify-between rounded-2xl border px-4 py-3.5 text-left ${
                     active
                       ? "border-accent bg-accent/10 ring-1 ring-accent/40"
                       : "border-line bg-raised"
                   }`}
                 >
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[15px] font-semibold">{p.label}</span>
-                      {p.badge ? (
-                        <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold text-bg">
-                          {p.badge}
-                        </span>
-                      ) : null}
-                    </div>
-                    {p.savePct ? (
-                      <p className="mt-0.5 text-[11px] text-accent">Save {p.savePct}%</p>
-                    ) : (
-                      <p className="mt-0.5 text-[11px] text-muted">Flexible · cancel anytime</p>
-                    )}
+                    <span className="text-[15px] font-semibold">{p.label}</span>
+                    {p.badge ? (
+                      <span className="ml-2 rounded-full bg-accent px-2 py-0.5 text-[10px] font-bold text-bg">
+                        {p.badge}
+                      </span>
+                    ) : null}
                   </div>
-                  <div className="text-right">
-                    <p className="text-lg font-bold">₹{p.priceInr}</p>
-                    <p className="text-[10px] text-muted">
-                      ~₹{Math.round(p.priceInr / p.months)}/mo
-                    </p>
-                  </div>
+                  <p className="text-lg font-bold">₹{p.priceInr}</p>
                 </button>
               );
             })}
           </div>
 
           {error ? (
-            <p className="mt-3 rounded-xl bg-red-500/15 px-3 py-2 text-[12px] text-red-400">
+            <p className="mt-3 rounded-xl bg-amber-500/15 px-3 py-2 text-[12px] text-amber-100">
               {error}
             </p>
           ) : null}
 
-          {/* Test mode notice — real GPay/PhonePe will fail on rzp_test_ keys */}
-          <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-relaxed text-amber-100/90">
-            <p className="font-semibold text-amber-200">Razorpay TEST mode</p>
-            <p className="mt-1 text-amber-100/80">
-              Real Google Pay / PhonePe will show “Payment could not be completed”.
-              Use these instead:
-            </p>
-            <ul className="mt-1.5 list-inside list-disc space-y-0.5 text-amber-50/90">
-              <li>
-                <span className="font-medium">UPI ID:</span> success@razorpay
-              </li>
-              <li>
-                <span className="font-medium">Card:</span> 4111 1111 1111 1111 · any CVV · any future expiry
-              </li>
-            </ul>
-          </div>
-
           <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-muted">
-            <Shield size={12} /> Secure payments via Razorpay
-            {testMode ? " · Test keys" : ""}
+            <Shield size={12} /> Razorpay Payment Page / Checkout
           </p>
         </div>
 
@@ -461,7 +410,7 @@ export function SubscriptionModal() {
           >
             {busy ? (
               <>
-                <Loader2 size={18} className="animate-spin" /> Opening Razorpay…
+                <Loader2 size={18} className="animate-spin" /> Opening…
               </>
             ) : (
               <>Pay ₹{plan.priceInr} · {plan.label}</>
