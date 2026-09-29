@@ -71,12 +71,44 @@ export function NowPlaying() {
   const [showQueue, setShowQueue] = useState(false);
   const [showSleep, setShowSleep] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
+  const [lyrics, setLyrics] = useState<string | null>(null);
+  const [lyricsLoading, setLyricsLoading] = useState(false);
   const [sleepLeft, setSleepLeft] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
     void offlineHydrate();
   }, [offlineHydrate]);
+
+  // Fetch lyrics when track changes or lyrics panel opens
+  useEffect(() => {
+    if (!current) {
+      setLyrics(null);
+      return;
+    }
+    let cancelled = false;
+    setLyrics(null);
+    setLyricsLoading(true);
+    const title = trackTitle(current);
+    const artist = trackArtist(current);
+    void fetch(
+      `/api/lyrics?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}`,
+    )
+      .then((r) => r.json())
+      .then((j: { lyrics?: string | null }) => {
+        if (cancelled) return;
+        setLyrics(j.lyrics || null);
+      })
+      .catch(() => {
+        if (!cancelled) setLyrics(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLyricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [current?.id]);
 
   useEffect(() => {
     if (sleepLeft == null) return;
@@ -141,6 +173,12 @@ export function NowPlaying() {
     setToast(`Sleep timer: ${mins} min`);
   }
 
+  function toggleLyricsView() {
+    setShowLyrics((v) => !v);
+    setShowQueue(false);
+    setShowSleep(false);
+  }
+
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-bg">
       <div
@@ -172,9 +210,33 @@ export function NowPlaying() {
           </button>
         </div>
 
-        <div className="mx-auto mb-5 aspect-square w-full max-w-[320px] overflow-hidden rounded-2xl shadow-[0_24px_60px_rgb(0_0_0/0.55)]">
-          <Artwork src={current.albumImageUrl} title={title} className="size-full text-5xl" />
-        </div>
+        {/* Artwork ↔ Lyrics flip (tap cover or mic) — like reference video */}
+        <button
+          type="button"
+          onClick={toggleLyricsView}
+          className="mx-auto mb-5 aspect-square w-full max-w-[320px] overflow-hidden rounded-2xl shadow-[0_24px_60px_rgb(0_0_0/0.55)] text-left"
+          aria-label={showLyrics ? "Show artwork" : "Show lyrics"}
+        >
+          {showLyrics ? (
+            <div className="flex size-full flex-col bg-[#e8eef8] p-5 text-slate-800">
+              <p className="mb-2 text-center text-3xl leading-none text-slate-400">”</p>
+              <div className="gmax-scroll min-h-0 flex-1 overflow-y-auto">
+                {lyricsLoading ? (
+                  <p className="text-center text-sm text-slate-500">Loading lyrics…</p>
+                ) : lyrics ? (
+                  <p className="whitespace-pre-wrap text-center text-[14px] leading-relaxed text-slate-700">
+                    {lyrics}
+                  </p>
+                ) : (
+                  <p className="pt-16 text-center text-sm text-slate-500">Lyrics not available</p>
+                )}
+              </div>
+              <p className="mt-2 text-center text-[10px] text-slate-400">Tap to show cover</p>
+            </div>
+          ) : (
+            <Artwork src={current.albumImageUrl} title={title} className="size-full text-5xl" />
+          )}
+        </button>
 
         <div className="mb-3 text-center">
           <p className="truncate font-display text-2xl font-semibold">{title}</p>
@@ -271,7 +333,6 @@ export function NowPlaying() {
               onClick={() => {
                 setShowSleep((v) => !v);
                 setShowQueue(false);
-                setShowLyrics(false);
               }}
               className={`grid size-10 place-items-center ${
                 sleepLeft != null ? "text-accent" : "text-muted"
@@ -295,7 +356,6 @@ export function NowPlaying() {
               onClick={() => {
                 setShowQueue((v) => !v);
                 setShowSleep(false);
-                setShowLyrics(false);
               }}
               className={`grid size-10 place-items-center ${
                 showQueue ? "text-accent" : "text-muted"
@@ -307,11 +367,7 @@ export function NowPlaying() {
 
             <button
               type="button"
-              onClick={() => {
-                setShowLyrics((v) => !v);
-                setShowQueue(false);
-                setShowSleep(false);
-              }}
+              onClick={toggleLyricsView}
               className={`grid size-10 place-items-center ${
                 showLyrics ? "text-accent" : "text-muted"
               }`}
@@ -337,7 +393,6 @@ export function NowPlaying() {
           {busyDl ? (
             <p className="mt-2 text-center text-[11px] text-muted">
               Saving offline… {dlProgress}%
-              {current.videoId ? " (YouTube → mirror if needed)" : ""}
             </p>
           ) : null}
           {sleepLeft != null ? (
@@ -378,20 +433,6 @@ export function NowPlaying() {
                   </button>
                 ) : null}
               </div>
-            </div>
-          ) : null}
-
-          {showLyrics ? (
-            <div className="mt-3 max-h-40 overflow-y-auto rounded-2xl border border-line bg-glass p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-sm font-medium">Lyrics</p>
-                <button type="button" onClick={() => setShowLyrics(false)}>
-                  <X size={14} className="text-muted" />
-                </button>
-              </div>
-              <p className="text-sm text-muted">
-                Lyrics for <span className="text-fg">{title}</span> aren’t loaded yet.
-              </p>
             </div>
           ) : null}
 

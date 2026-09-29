@@ -120,25 +120,23 @@ function bindEngine() {
   );
 }
 
+/**
+ * Resolve playable URL.
+ * Order: offline → existing good stream → Saavn exact match → Audius → YouTube.
+ * Saavn first avoids "wrong song" from loose YouTube search.
+ */
 async function maybeResolve(track: Track, force = false): Promise<Track> {
-  // Offline blob first — works with no network
   try {
     const blobUrl = await peekOfflineBlob(track.id);
     if (blobUrl) {
       return { ...track, streamUrl: blobUrl, videoId: undefined };
     }
   } catch {
-    /* continue online resolve */
+    /* */
   }
 
-  if (isYouTubeTrack(track)) {
-    return {
-      ...track,
-      streamUrl: track.streamUrl?.includes("/api/audio") ? undefined : track.streamUrl,
-    };
-  }
-
-  if (!force && track.streamUrl) {
+  // Keep direct streams (Saavn/Spotify/etc) unless force
+  if (!force && track.streamUrl && !track.streamUrl.includes("/api/audio")) {
     return track;
   }
 
@@ -146,7 +144,8 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
   const artist = track.artist?.name?.trim() || "";
   const token = ++resolveInflight;
 
-  if ((track.provider === "saavn" || !track.provider) && title) {
+  // Always try Saavn title+artist match first (correct Indian tracks)
+  if (title) {
     try {
       const saavn = await resolveSaavnStream(title, artist);
       if (token !== resolveInflight) return track;
@@ -155,6 +154,7 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
           ...track,
           streamUrl: saavn.streamUrl,
           duration: saavn.duration || track.duration,
+          videoId: undefined,
         };
       }
     } catch {
@@ -178,7 +178,11 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
     }
   }
 
-  if (title && !track.videoId) {
+  // YouTube only if still no stream and we have/need videoId
+  if (title && !track.streamUrl) {
+    if (isYouTubeTrack(track) && track.videoId && !force) {
+      return { ...track, streamUrl: undefined };
+    }
     try {
       const resolved = await resolveVideoId(title, artist);
       if (token !== resolveInflight) return track;
@@ -193,8 +197,15 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
         return { ...track, videoId: resolved.videoId };
       }
     } catch {
-      /* fall through */
+      /* */
     }
+  }
+
+  if (isYouTubeTrack(track)) {
+    return {
+      ...track,
+      streamUrl: track.streamUrl?.includes("/api/audio") ? undefined : track.streamUrl,
+    };
   }
 
   return track;
@@ -222,7 +233,7 @@ async function warmNext() {
       }
     }
   } catch {
-    /* ignore */
+    /* */
   }
 }
 
@@ -281,10 +292,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
 
   playTrack: async (track, opts) => {
     const queue = opts?.tracks?.length ? opts.tracks : [track];
-    const index = Math.max(
-      0,
-      queue.findIndex((t) => t.id === track.id),
-    );
+    const index = Math.max(0, queue.findIndex((t) => t.id === track.id));
     const order = get().shuffle
       ? shuffleOrder(queue.length, index)
       : queue.map((_, i) => i);
@@ -338,9 +346,8 @@ export const usePlayer = create<PlayerState>((set, get) => ({
         nextPos >= seq.length ? (seq[0] ?? 0) : (seq[nextPos] ?? index);
       set({ index: nextIndex, error: null, isPlaying: true });
       const t = queue[nextIndex];
-      if (t) {
-        void start(t, !t.streamUrl).finally(done);
-      } else {
+      if (t) void start(t, !t.streamUrl).finally(done);
+      else {
         enginePause();
         set({ isPlaying: false });
         done();
@@ -429,8 +436,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
     const current = get().current;
     if (current) {
       consecutiveErrors = 0;
-      const fresh = { ...current, streamUrl: undefined };
-      void start(fresh, true);
+      void start({ ...current, streamUrl: undefined }, true);
     }
   },
 }));
