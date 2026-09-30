@@ -14,6 +14,7 @@ import { canPlay } from "@/lib/gmax/normalize";
 import { resolveVideoId } from "@/lib/gmax/search";
 import { resolveSaavnStream } from "@/lib/gmax/saavn";
 import { resolveAudiusStream } from "@/lib/gmax/audius";
+import { preferIframeBackup, resolveYtDirectAudio } from "@/lib/gmax/ytAudio";
 import { useLibrary } from "./library";
 import { peekOfflineBlob } from "./offline";
 
@@ -122,8 +123,7 @@ function bindEngine() {
 
 /**
  * Resolve playable URL.
- * Order: offline → existing good stream → Saavn exact match → Audius → YouTube.
- * Saavn first avoids "wrong song" from loose YouTube search.
+ * Order: offline → existing stream → Saavn → YT Piped/Cobalt → Audius → videoId (iframe backup).
  */
 async function maybeResolve(track: Track, force = false): Promise<Track> {
   try {
@@ -135,7 +135,6 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
     /* */
   }
 
-  // Keep direct streams (Saavn/Spotify/etc) unless force
   if (!force && track.streamUrl && !track.streamUrl.includes("/api/audio")) {
     return track;
   }
@@ -144,7 +143,7 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
   const artist = track.artist?.name?.trim() || "";
   const token = ++resolveInflight;
 
-  // Always try Saavn title+artist match first (correct Indian tracks)
+  // Saavn exact match first (correct Indian tracks)
   if (title) {
     try {
       const saavn = await resolveSaavnStream(title, artist);
@@ -158,7 +157,24 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
         };
       }
     } catch {
-      /* next */
+      /* */
+    }
+  }
+
+  // YouTube → Piped + Cobalt direct audio (HTML5), iframe only as backup
+  if (track.videoId && !preferIframeBackup()) {
+    try {
+      const direct = await resolveYtDirectAudio(track.videoId);
+      if (token !== resolveInflight) return track;
+      if (direct?.url) {
+        return {
+          ...track,
+          streamUrl: direct.url,
+          // keep videoId so iframe backup still possible on error
+        };
+      }
+    } catch {
+      /* fall through to iframe */
     }
   }
 
@@ -174,18 +190,25 @@ async function maybeResolve(track: Track, force = false): Promise<Track> {
         };
       }
     } catch {
-      /* next */
+      /* */
     }
   }
 
-  // YouTube only if still no stream and we have/need videoId
-  if (title && !track.streamUrl) {
-    if (isYouTubeTrack(track) && track.videoId && !force) {
-      return { ...track, streamUrl: undefined };
-    }
+  if (title && !track.streamUrl && !track.videoId) {
     try {
       const resolved = await resolveVideoId(title, artist);
       if (token !== resolveInflight) return track;
+      if (resolved?.videoId && !preferIframeBackup()) {
+        const direct = await resolveYtDirectAudio(resolved.videoId);
+        if (direct?.url) {
+          return {
+            ...track,
+            videoId: resolved.videoId,
+            streamUrl: direct.url,
+            duration: resolved.duration || track.duration,
+          };
+        }
+      }
       if (resolved?.streamUrl) {
         return {
           ...track,
