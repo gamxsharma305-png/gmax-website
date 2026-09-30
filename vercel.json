@@ -16,14 +16,11 @@
     }
   ],
   "functions": {
-    "api/stream.js": {
-      "maxDuration": 30
-    },
-    "api/audio.js": {
-      "maxDuration": 60
-    },
-    "api/yt-resolve.js": {
-      "maxDuration": 30
-    }
+    "api/search.js": { "maxDuration": 30 },
+    "api/yt-audio.js": { "maxDuration": 30 },
+    "api/lyrics.js": { "maxDuration": 15 },
+    "api/register-pending.js": { "maxDuration": 10 },
+    "api/razorpay-webhook.js": { "maxDuration": 15 },
+    "api/payment-status.js": { "maxDuration": 10 }
   }
 }
