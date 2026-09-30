@@ -1,6 +1,7 @@
 import { searchItunes } from "./itunes";
 import { searchSaavn, resolveSaavnStream } from "./saavn";
 import { searchAudius, resolveAudiusStream } from "./audius";
+import { resolveYtDirectAudio } from "./ytAudio";
 import type { SearchResults, Track } from "./types";
 import { emptySearchResults } from "./types";
 
@@ -98,50 +99,30 @@ export type ResolveResult = {
   thumbnail?: string | null;
 };
 
-/**
- * Resolve YouTube video → same-origin proxy URL for HTML5 audio.
- * Uses /api/audio so playback works from the user's device (CDN URLs are IP-bound).
- */
+/** Resolve YouTube videoId → direct HTML5 audio URL via /api/yt-audio (Piped+Cobalt). */
 export async function resolveYouTubeStream(
   videoId: string,
 ): Promise<ResolveResult | null> {
   const id = videoId.trim();
   if (!id) return null;
 
-  // Same-origin proxy — required for background + cross-device playback
-  const proxyUrl = `/api/audio?videoId=${encodeURIComponent(id)}`;
-
   try {
-    const res = await fetch(`/api/stream?videoId=${encodeURIComponent(id)}`);
-    if (res.ok) {
-      const json = (await res.json()) as {
-        success?: boolean;
-        data?: {
-          title?: string;
-          artist?: string;
-          thumbnail?: string;
-          duration?: number;
-        };
+    const direct = await resolveYtDirectAudio(id);
+    if (direct?.url) {
+      return {
+        videoId: id,
+        streamUrl: direct.url,
+        duration: null,
       };
-      if (json.success && json.data) {
-        return {
-          videoId: id,
-          streamUrl: proxyUrl,
-          duration: json.data.duration ?? null,
-          title: json.data.title ?? null,
-          artist: json.data.artist ?? null,
-          thumbnail: json.data.thumbnail ?? null,
-        };
-      }
     }
   } catch {
-    /* still return proxy URL — audio endpoint resolves on its own */
+    /* */
   }
 
-  // Even if metadata fails, proxy can still stream
+  // Keep videoId so engine can fall back to iframe backup
   return {
     videoId: id,
-    streamUrl: proxyUrl,
+    streamUrl: null,
     duration: null,
   };
 }
@@ -154,33 +135,15 @@ export async function resolveVideoId(
   if (!t) return null;
 
   try {
-    const res = await fetch("/api/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: t, artist }),
-    });
-    if (res.ok) {
-      const data = (await res.json()) as ResolveResult;
-      if (data.videoId && !data.streamUrl) {
-        const stream = await resolveYouTubeStream(data.videoId);
-        if (stream?.streamUrl) {
-          return {
-            ...data,
-            streamUrl: stream.streamUrl,
-            duration: stream.duration ?? data.duration,
-          };
-        }
-      }
-      if (data.streamUrl || data.videoId) return data;
-    }
-  } catch {
-    /* continue */
-  }
-
-  try {
     const saavn = await resolveSaavnStream(t, artist);
     if (saavn?.streamUrl) {
-      return { streamUrl: saavn.streamUrl, duration: saavn.duration ?? null, videoId: null };
+      return {
+        streamUrl: saavn.streamUrl,
+        duration: saavn.duration ?? null,
+        videoId: null,
+        title: saavn.title ?? null,
+        artist: saavn.artist ?? null,
+      };
     }
   } catch {
     /* ignore */
@@ -189,10 +152,41 @@ export async function resolveVideoId(
   try {
     const audius = await resolveAudiusStream(t, artist);
     if (audius?.streamUrl) {
-      return { streamUrl: audius.streamUrl, duration: audius.duration ?? null, videoId: null };
+      return {
+        streamUrl: audius.streamUrl,
+        duration: audius.duration ?? null,
+        videoId: null,
+      };
     }
   } catch {
     /* ignore */
+  }
+
+  // Soft YouTube search via public Piped search (no extra serverless fn)
+  try {
+    const q = [t, artist].filter(Boolean).join(" ");
+    const r = await fetch(
+      `https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(q)}&filter=videos`,
+    );
+    if (r.ok) {
+      const data = (await r.json()) as {
+        items?: { url?: string; title?: string; duration?: number }[];
+      };
+      const item = data.items?.[0];
+      const m = item?.url?.match(/[?&]v=([\w-]{6,20})|\/watch\/([\w-]{6,20})|youtu\.be\/([\w-]{6,20})|\/([\w-]{11})$/);
+      const vid = m?.[1] || m?.[2] || m?.[3] || m?.[4];
+      if (vid) {
+        const stream = await resolveYouTubeStream(vid);
+        return {
+          videoId: vid,
+          streamUrl: stream?.streamUrl ?? null,
+          duration: item?.duration ?? stream?.duration ?? null,
+          title: item?.title ?? null,
+        };
+      }
+    }
+  } catch {
+    /* */
   }
 
   return null;
