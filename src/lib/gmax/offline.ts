@@ -1,6 +1,7 @@
 import type { Track } from "./types";
 import { normalizeTrack } from "./normalize";
 import { resolveSaavnStream } from "./saavn";
+import { resolveYtDirectAudio } from "./ytAudio";
 
 const DB_NAME = "gmax-offline";
 const DB_VER = 1;
@@ -40,13 +41,11 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
-/** Best URL to fetch for offline storage (same-origin preferred). */
+/** Best direct URL already on the track (no deleted /api/audio). */
 export function offlineSourceUrl(track: Track): string | null {
-  if (track.videoId && /^[\w-]{6,20}$/.test(track.videoId)) {
-    return `/api/audio?videoId=${encodeURIComponent(track.videoId)}`;
-  }
   const s = track.streamUrl?.trim() || "";
   if (s && (s.startsWith("http") || s.startsWith("blob:") || s.startsWith("/"))) {
+    if (s.includes("/api/audio")) return null;
     return s;
   }
   return null;
@@ -160,7 +159,7 @@ async function fetchToBlob(
 
 /**
  * Download track for offline.
- * YouTube: try /api/audio first; on bot-block, fall back to Saavn matching stream.
+ * Order: existing stream → yt-audio (Piped/Cobalt) → Saavn.
  */
 export async function offlineDownload(
   track: Track,
@@ -169,7 +168,6 @@ export async function offlineDownload(
 ): Promise<{ ok: true; bytes: number; via?: string } | { ok: false; error: string }> {
   const attempts: string[] = [];
 
-  // 1) Explicit URL or YouTube proxy
   const primary = streamUrl || offlineSourceUrl(track);
   if (primary) {
     try {
@@ -177,17 +175,28 @@ export async function offlineDownload(
       const blob = await fetchToBlob(primary, onProgress);
       if (blob.size < 8000) throw new Error("File too small");
       await saveBlob(track, blob);
-      return {
-        ok: true,
-        bytes: blob.size,
-        via: primary.includes("/api/audio") ? "youtube" : "stream",
-      };
+      return { ok: true, bytes: blob.size, via: "stream" };
     } catch (e) {
       attempts.push(e instanceof Error ? e.message : "primary failed");
     }
   }
 
-  // 2) Saavn fallback (works when YouTube is bot-blocked)
+  if (track.videoId && /^[\w-]{6,20}$/.test(track.videoId)) {
+    try {
+      onProgress?.(8);
+      const direct = await resolveYtDirectAudio(track.videoId);
+      if (direct?.url) {
+        const blob = await fetchToBlob(direct.url, onProgress);
+        if (blob.size < 8000) throw new Error("YT file too small");
+        await saveBlob(track, blob);
+        return { ok: true, bytes: blob.size, via: "yt-audio" };
+      }
+      attempts.push("No yt-audio URL");
+    } catch (e) {
+      attempts.push(e instanceof Error ? e.message : "yt-audio failed");
+    }
+  }
+
   try {
     onProgress?.(10);
     const title = track.title || "";
@@ -213,7 +222,7 @@ export async function offlineDownload(
   return {
     ok: false,
     error:
-      attempts.find((a) => /bot|block|extract/i.test(a)) ||
+      attempts.find((a) => /bot|block|extract|cors/i.test(a)) ||
       attempts[0] ||
       "Could not save offline. Try another track.",
   };
