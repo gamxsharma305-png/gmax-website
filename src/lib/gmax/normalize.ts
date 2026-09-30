@@ -25,6 +25,7 @@ export function normalizeTrack(raw: {
   if (raw.provider === "youtube") provider = "youtube";
   else if (raw.provider === "saavn") provider = "saavn";
   else if (raw.provider === "audius") provider = "audius";
+  else if (raw.provider === "archive") provider = "archive";
   const title = safeText(raw.title, "Unknown title");
   const artistName = safeText(raw.artistName, "Unknown artist");
   const videoId = safeText(raw.videoId);
