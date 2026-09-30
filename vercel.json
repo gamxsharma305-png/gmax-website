@@ -10,14 +10,16 @@
       "source": "/api/(.*)",
       "headers": [
         { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Range" }
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS, HEAD" },
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Range" },
+        { "key": "Access-Control-Expose-Headers", "value": "Content-Length, Content-Range, Accept-Ranges" }
       ]
     }
   ],
   "functions": {
     "api/search.js": { "maxDuration": 30 },
     "api/yt-audio.js": { "maxDuration": 30 },
+    "api/stream.js": { "maxDuration": 60 },
     "api/lyrics.js": { "maxDuration": 15 },
     "api/register-pending.js": { "maxDuration": 10 },
     "api/razorpay-webhook.js": { "maxDuration": 15 },

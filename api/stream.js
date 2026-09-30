@@ -1,0 +1,121 @@
+/**
+ * Same-origin YouTube audio proxy for HTML5 <audio> + lock-screen playback.
+ *
+ * GET /api/stream?videoId=VIDEO_ID
+ * Optional: Range header (seeking)
+ *
+ * Flow: Piped (multi-instance) → best audio URL → pipe bytes to client
+ * with audio/mp4 + Accept-Ranges so mobile Chrome keeps playing when locked.
+ */
+
+const PIPED = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://pipedapi.nosea.vip',
+  'https://api.piped.private.coffee',
+  'https://pipedapi.leptons.xyz',
+];
+
+function cors(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+}
+
+function pickAudio(streams) {
+  if (!Array.isArray(streams)) return null;
+  const scored = streams
+    .filter((s) => s && s.url && /audio/i.test(String(s.mimeType || s.mime_type || 'audio')))
+    .map((s) => {
+      const mime = String(s.mimeType || s.mime_type || 'audio/mp4');
+      const br = Number(s.bitrate || s.bitRate || 0);
+      let score = br;
+      if (/mp4|m4a|aac/i.test(mime)) score += 80000;
+      if (/webm|opus/i.test(mime)) score += 30000;
+      return { url: s.url, mimeType: mime.split(';')[0], bitrate: br, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored[0] || null;
+}
+
+async function resolvePipedAudio(videoId) {
+  for (const base of PIPED) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 10000);
+      const r = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
+        signal: ctrl.signal,
+        headers: { Accept: 'application/json' },
+      });
+      clearTimeout(t);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const audio = pickAudio(j.audioStreams || j.audio_streams);
+      if (audio?.url) return audio;
+    } catch {
+      /* next instance */
+    }
+  }
+  return null;
+}
+
+export default async function handler(req, res) {
+  cors(res);
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return res.status(405).json({ error: 'GET only' });
+  }
+
+  const videoId = String(req.query?.videoId || req.query?.v || '').trim();
+  if (!/^[\w-]{6,20}$/.test(videoId)) {
+    return res.status(400).json({ error: 'Invalid videoId' });
+  }
+
+  try {
+    const audio = await resolvePipedAudio(videoId);
+    if (!audio?.url) {
+      return res.status(404).json({ error: 'No audio stream found' });
+    }
+
+    const range = req.headers.range || req.headers.Range;
+    const upstreamHeaders = {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: '*/*',
+    };
+    if (range) upstreamHeaders.Range = range;
+
+    const upstream = await fetch(audio.url, {
+      headers: upstreamHeaders,
+      redirect: 'follow',
+    });
+
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(upstream.status).json({
+        error: `Upstream ${upstream.status}`,
+      });
+    }
+
+    const contentType =
+      upstream.headers.get('content-type') || audio.mimeType || 'audio/mp4';
+    res.status(upstream.status);
+    res.setHeader('Content-Type', contentType.split(';')[0]);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+
+    const cl = upstream.headers.get('content-length');
+    if (cl) res.setHeader('Content-Length', cl);
+    const cr = upstream.headers.get('content-range');
+    if (cr) res.setHeader('Content-Range', cr);
+
+    if (req.method === 'HEAD') return res.end();
+
+    // Pipe body (Node / Vercel)
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    return res.send(buf);
+  } catch (err) {
+    console.error('[stream]', err?.message || err);
+    return res.status(502).json({ error: err?.message || 'Stream proxy failed' });
+  }
+}
