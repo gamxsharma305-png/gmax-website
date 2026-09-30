@@ -1,4 +1,9 @@
-export type ProviderId = "youtube" | "itunes" | "saavn" | "audius";
+export type ProviderId =
+  | "youtube"
+  | "itunes"
+  | "saavn"
+  | "audius"
+  | "archive";
 
 export type Artist = {
   id: string;
@@ -80,25 +85,10 @@ export const DEFAULT_PREFS: UserPrefs = {
   crossfade: false,
 };
 
-export type HistoryEntry = {
-  id: string;
-  track: Track;
-  playedAt: number;
-};
+export function emptySearchResults(query = ""): SearchResults {
+  return { query, tracks: [], artists: [], albums: [] };
+}
 
-export type Category = {
-  id: string;
-  name: string;
-  color: string;
-  query: string;
-};
-
-export const emptySearchResults = (query = ""): SearchResults => ({
-  query,
-  tracks: [],
-  artists: [],
-  albums: [],
-});
-
-export const trackKey = (provider: ProviderId, sourceId: string) =>
-  `${provider}:${sourceId}`;
+export function trackKey(provider: ProviderId, sourceId: string): string {
+  return `${provider}:${sourceId}`;
+}
