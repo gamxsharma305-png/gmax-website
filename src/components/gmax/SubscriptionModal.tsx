@@ -11,6 +11,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { getDeviceId } from "@/lib/gmax/device";
 import {
   PREMIUM_FEATURES,
   PREMIUM_PLANS,
@@ -19,45 +20,11 @@ import {
 import { usePremium } from "@/store/premium";
 import { useUi } from "@/store/ui";
 
-declare global {
-  interface Window {
-    Razorpay?: new (options: Record<string, unknown>) => { open: () => void };
-  }
-}
-
-function loadRazorpayScript(): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (typeof window === "undefined") return resolve(false);
-    if (window.Razorpay) return resolve(true);
-    const s = document.createElement("script");
-    s.src = "https://checkout.razorpay.com/v1/checkout.js";
-    s.async = true;
-    s.onload = () => resolve(true);
-    s.onerror = () => resolve(false);
-    document.body.appendChild(s);
-  });
-}
-
-function deviceId(): string {
-  try {
-    const k = "gmax.deviceId";
-    let id = localStorage.getItem(k);
-    if (!id) {
-      id = "web-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-      localStorage.setItem(k, id);
-    }
-    return id;
-  } catch {
-    return "web-anon";
-  }
-}
-
 type ShowcaseCard = {
   id: string;
   title: string;
   subtitle: string;
   status: string;
-  statusOn: boolean;
   gradient: string;
   Icon: typeof Headphones;
 };
@@ -68,7 +35,6 @@ const SHOWCASE: ShowcaseCard[] = [
     title: "HQ Audio",
     subtitle: "Crystal clear streams",
     status: "Premium",
-    statusOn: true,
     gradient: "linear-gradient(160deg, #34d399 0%, #059669 45%, #0f172a 100%)",
     Icon: Headphones,
   },
@@ -77,7 +43,6 @@ const SHOWCASE: ShowcaseCard[] = [
     title: "Unlimited lists",
     subtitle: "Create without limits",
     status: "Unlocked",
-    statusOn: true,
     gradient: "linear-gradient(160deg, #a78bfa 0%, #7c3aed 45%, #0f172a 100%)",
     Icon: ListMusic,
   },
@@ -86,7 +51,6 @@ const SHOWCASE: ShowcaseCard[] = [
     title: "Background play",
     subtitle: "Music while you multitask",
     status: "Active",
-    statusOn: true,
     gradient: "linear-gradient(160deg, #fbbf24 0%, #ea580c 45%, #0f172a 100%)",
     Icon: Radio,
   },
@@ -95,7 +59,6 @@ const SHOWCASE: ShowcaseCard[] = [
     title: "Ad-free 🎵",
     subtitle: "Zero interruptions",
     status: "Clean",
-    statusOn: true,
     gradient: "linear-gradient(160deg, #38bdf8 0%, #2563eb 45%, #0f172a 100%)",
     Icon: Zap,
   },
@@ -182,6 +145,7 @@ export function SubscriptionModal() {
   const premium = usePremium();
   const [selected, setSelected] = useState<PlanId>("m3");
   const [busy, setBusy] = useState(false);
+  const [polling, setPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
@@ -189,102 +153,84 @@ export function SubscriptionModal() {
     if (!premium.hydrated) premium.hydrate();
   }, [premium]);
 
+  // After return from rzp.io — poll unlock
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("gmax_pay_pending");
+      if (!raw) return;
+      const p = JSON.parse(raw) as { ts?: number };
+      if (!p.ts || Date.now() - p.ts > 45 * 60 * 1000) {
+        localStorage.removeItem("gmax_pay_pending");
+        return;
+      }
+      setPolling(true);
+      void premium.pollUnlock(90000).then((ok) => {
+        setPolling(false);
+        if (ok) setSuccess(true);
+        else
+          setError(
+            "Payment not confirmed yet. Wait 30s and open Premium again, or ensure you tapped Pay Now on this site first.",
+          );
+      });
+    } catch {
+      /* */
+    }
+  }, []);
+
   const plan = PREMIUM_PLANS.find((p) => p.id === selected)!;
 
-  /** INSTGMAX style: Payment Page link (no API keys). Fallback: Checkout if keys exist. */
   const startPay = async () => {
     setError(null);
     setBusy(true);
     try {
-      const did = deviceId();
+      const deviceId = getDeviceId();
+      const amount = plan.priceInr;
 
-      // 1) Register pending + get payment page URL (no keys)
-      const pendRes = await fetch("/api/razorpay/pending", {
+      const res = await fetch("/api/register-pending", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planId: selected, deviceId: did }),
+        body: JSON.stringify({
+          deviceId,
+          profileId: "gmax",
+          plan: plan.label,
+          amount,
+        }),
       });
-      const pend = (await pendRes.json()) as {
-        success?: boolean;
+      const data = (await res.json()) as {
+        ok?: boolean;
         paymentPageUrl?: string | null;
         error?: string;
         hint?: string;
       };
 
-      if (pend.paymentPageUrl) {
-        // Open Razorpay hosted Payment Page (INSTGMAX method)
-        window.open(pend.paymentPageUrl, "_blank", "noopener,noreferrer");
-        setError(
-          "Payment page opened. Pay there, then return here — Premium unlocks via webhook (up to ~1 min).",
-        );
-        setBusy(false);
-        // Poll local premium after return
-        window.setTimeout(() => premium.hydrate(), 8000);
-        return;
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Could not register payment");
       }
 
-      // 2) Fallback: standard Checkout if RAZORPAY_KEY_ID is set
-      const ok = await loadRazorpayScript();
-      if (!ok) throw new Error("Could not load Razorpay");
+      try {
+        localStorage.setItem(
+          "gmax_pay_pending",
+          JSON.stringify({
+            amount,
+            plan: plan.label,
+            profileId: "gmax",
+            deviceId,
+            ts: Date.now(),
+          }),
+        );
+      } catch {
+        /* */
+      }
 
-      const res = await fetch("/api/razorpay/create-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ planId: selected }),
-      });
-      const data = (await res.json()) as {
-        success?: boolean;
-        error?: string;
-        orderId?: string;
-        amount?: number;
-        currency?: string;
-        keyId?: string;
-      };
-
-      if (!res.ok || !data.success || !data.orderId || !data.keyId) {
+      if (!data.paymentPageUrl) {
         throw new Error(
-          pend.hint ||
-            data.error ||
-            "Add Razorpay Payment Page links (RAZORPAY_PAYMENT_PAGE_29/49/59) or API keys on Vercel",
+          data.hint ||
+            "Payment page URL missing. Set RAZORPAY_PAYMENT_PAGE_29 / _49 / _59 on Vercel.",
         );
       }
 
-      const rzp = new window.Razorpay!({
-        key: data.keyId,
-        amount: data.amount,
-        currency: data.currency || "INR",
-        name: "GMAX Premium",
-        description: `${plan.label} · ad-free music`,
-        order_id: data.orderId,
-        theme: { color: "#1db954" },
-        handler: async (response: {
-          razorpay_payment_id: string;
-          razorpay_order_id: string;
-          razorpay_signature: string;
-        }) => {
-          try {
-            const v = await fetch("/api/razorpay/verify", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...response, planId: selected }),
-            });
-            const vr = (await v.json()) as { success?: boolean; error?: string };
-            if (!v.ok || !vr.success) {
-              setError(vr.error || "Payment verification failed");
-              setBusy(false);
-              return;
-            }
-            premium.grant(selected, response.razorpay_payment_id);
-            setSuccess(true);
-          } catch {
-            setError("Verification failed");
-          } finally {
-            setBusy(false);
-          }
-        },
-        modal: { ondismiss: () => setBusy(false) },
-      });
-      rzp.open();
+      // Redirect to Razorpay Payment Page (no API keys)
+      window.location.href = data.paymentPageUrl;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Payment failed");
       setBusy(false);
@@ -307,6 +253,11 @@ export function SubscriptionModal() {
               <Crown size={32} />
             </div>
             <h2 className="text-2xl font-bold">You're Premium</h2>
+            <p className="mt-2 text-sm text-muted">
+              {premium.expiresAt
+                ? `Valid till ${new Date(premium.expiresAt).toLocaleDateString()}`
+                : "Membership active on this device"}
+            </p>
             <button
               type="button"
               onClick={closeOverlay}
@@ -337,7 +288,7 @@ export function SubscriptionModal() {
             </span>
             <div>
               <h2 className="text-lg font-bold">GMAX Premium</h2>
-              <p className="text-[12px] text-muted">₹29 · ₹49 · ₹59 · Payment Page / Checkout</p>
+              <p className="text-[12px] text-muted">₹29 · ₹49 · ₹59 · Payment Page</p>
             </div>
           </div>
         </div>
@@ -394,26 +345,31 @@ export function SubscriptionModal() {
               {error}
             </p>
           ) : null}
+          {polling ? (
+            <p className="mt-3 flex items-center gap-2 text-[12px] text-muted">
+              <Loader2 size={14} className="animate-spin" /> Checking payment…
+            </p>
+          ) : null}
 
           <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-muted">
-            <Shield size={12} /> Razorpay Payment Page / Checkout
+            <Shield size={12} /> Pay on this device · unlock stays here
           </p>
         </div>
 
         <div className="shrink-0 border-t border-hairline bg-raised px-5 py-4 pb-[calc(16px+env(safe-area-inset-bottom))]">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || polling}
             onClick={() => void startPay()}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-accent text-[15px] font-bold text-bg disabled:opacity-60"
             style={{ height: 52 }}
           >
             {busy ? (
               <>
-                <Loader2 size={18} className="animate-spin" /> Opening…
+                <Loader2 size={18} className="animate-spin" /> Opening payment…
               </>
             ) : (
-              <>Pay ₹{plan.priceInr} · {plan.label}</>
+              <>Pay Now · ₹{plan.priceInr}</>
             )}
           </button>
         </div>
