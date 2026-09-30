@@ -8,3 +8,12 @@ createRoot(document.getElementById("root")!).render(
     <GmaxApp />
   </StrictMode>,
 );
+
+/** Register SW so the PWA stays associated while audio plays in background */
+if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      /* offline / first load */
+    });
+  });
+}

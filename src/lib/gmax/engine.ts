@@ -33,10 +33,11 @@ let poll: number | null = null;
 let volume = 1;
 let navHandlers: { next?: () => void; prev?: () => void } = {};
 let wakeLock: WakeLockSentinel | null = null;
+let lastTrackMeta: Track | null = null;
 
 /** True while we intend to play (not user-paused). */
 let wantPlay = false;
-/** True after user/notification pause — blocks ALL auto-resume. */
+/** True after explicit user/notification pause — blocks auto-resume. */
 let userPaused = false;
 /** True only while our code is calling pause() intentionally. */
 let pauseFromCode = false;
@@ -54,13 +55,32 @@ const YT_PAUSED = 2;
 const YT_ENDED = 0;
 const YT_BUFFERING = 3;
 
+function isDocumentHidden(): boolean {
+  try {
+    return typeof document !== "undefined" && document.visibilityState === "hidden";
+  } catch {
+    return false;
+  }
+}
+
 async function requestWakeLock() {
   try {
     if (typeof navigator !== "undefined" && "wakeLock" in navigator) {
+      // Re-request if released (common after screen lock on some Android builds)
+      if (wakeLock && !wakeLock.released) return;
       wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => {
+        wakeLock = null;
+        // If we still want playback, try again shortly (helps some Chrome builds)
+        if (shouldAutoResume()) {
+          window.setTimeout(() => {
+            void requestWakeLock();
+          }, 800);
+        }
+      });
     }
   } catch {
-    /* ignore */
+    /* not supported / denied — audio can still play in background without it */
   }
 }
 
@@ -75,7 +95,9 @@ async function releaseWakeLock() {
 
 function setSessionState(state: "playing" | "paused" | "none") {
   try {
-    if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state;
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = state;
+    }
   } catch {
     /* */
   }
@@ -155,7 +177,7 @@ function startPlayWatchdog() {
     }
     if (!playing || (pos > 0.5 && Math.abs(pos - lastWatchPos) < 0.12)) {
       stallTicks += 1;
-      if (stallTicks >= 5) {
+      if (stallTicks >= 4) {
         stallTicks = 0;
         if (shouldAutoResume()) {
           void softResume();
@@ -164,7 +186,7 @@ function startPlayWatchdog() {
       }
     } else stallTicks = 0;
     lastWatchPos = pos;
-  }, 1500);
+  }, 1200);
 }
 
 function stopPlayWatchdog() {
@@ -185,7 +207,7 @@ function scheduleNetRetry() {
     netRetryTimer = null;
     if (!shouldAutoResume() || !audio) return;
     netRetries += 1;
-    if (netRetries > 8) return;
+    if (netRetries > 10) return;
     try {
       void audio.play().catch(() => {
         /* */
@@ -193,7 +215,7 @@ function scheduleNetRetry() {
     } catch {
       /* */
     }
-  }, 400 + netRetries * 300);
+  }, 350 + netRetries * 250);
 }
 
 function ensureAudio() {
@@ -204,8 +226,9 @@ function ensureAudio() {
   el.setAttribute("playsinline", "true");
   el.setAttribute("webkit-playsinline", "true");
   el.setAttribute("preload", "auto");
-  // Important for media session / lock screen on Android Chrome
+  // Do NOT use display:none — some mobile browsers throttle hidden media
   el.setAttribute("controls", "false");
+  el.crossOrigin = "anonymous";
   el.style.cssText =
     "position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1";
   document.body.appendChild(el);
@@ -217,34 +240,45 @@ function ensureAudio() {
       clearTimeout(pauseSettleTimer);
       pauseSettleTimer = null;
     }
-    // Only clear user pause when play actually starts from a resume intent
     if (wantPlay) userPaused = false;
     handlers?.onPlay();
-    void requestWakeLock();
+    // Critical for lock-screen / notification controls
     setSessionState("playing");
+    void requestWakeLock();
+    if (lastTrackMeta) bindMediaSession(lastTrackMeta);
+  });
+
+  audio.addEventListener("playing", () => {
+    netRetries = 0;
+    handlers?.onBuffer(false);
+    setSessionState("playing");
+    void requestWakeLock();
   });
 
   audio.addEventListener("pause", () => {
-    // Our own pause() call
+    // Our own intentional pause
     if (pauseFromCode || userPaused) {
       handlers?.onPause();
       setSessionState("paused");
       return;
     }
 
-    // Android notification often pauses <audio> WITHOUT firing Media Session "pause".
-    // If still paused shortly after, treat as intentional user pause.
-    if (pauseSettleTimer != null) clearTimeout(pauseSettleTimer);
-    pauseSettleTimer = window.setTimeout(() => {
-      pauseSettleTimer = null;
-      if (!audio || !audio.paused || audio.ended || completionFired) return;
-      // Still paused → user / system media notification pause
-      userPaused = true;
-      wantPlay = false;
-      handlers?.onPause();
-      setSessionState("paused");
-      void releaseWakeLock();
-    }, 280);
+    // Screen lock / tab switch often fires pause briefly.
+    // NEVER treat as user-pause while we still wantPlay — soft-resume instead.
+    if (shouldAutoResume()) {
+      if (pauseSettleTimer != null) clearTimeout(pauseSettleTimer);
+      pauseSettleTimer = window.setTimeout(() => {
+        pauseSettleTimer = null;
+        if (!audio || !shouldAutoResume()) return;
+        if (!audio.paused || audio.ended || completionFired) return;
+        // Still paused but we want play → resume (background / lock screen)
+        void softResume();
+      }, 200);
+      return;
+    }
+
+    handlers?.onPause();
+    setSessionState("paused");
   });
 
   audio.addEventListener("ended", () => {
@@ -276,12 +310,8 @@ function ensureAudio() {
     handlers?.onBuffer(true);
     if (shouldAutoResume()) scheduleNetRetry();
   });
-  audio.addEventListener("playing", () => {
-    netRetries = 0;
-    handlers?.onBuffer(false);
-  });
   audio.addEventListener("error", () => {
-    if (shouldAutoResume() && netRetries < 6) {
+    if (shouldAutoResume() && netRetries < 8) {
       scheduleNetRetry();
       return;
     }
@@ -408,6 +438,7 @@ function wireMediaSessionActions() {
 }
 
 function bindMediaSession(track: Track) {
+  lastTrackMeta = track;
   if (!("mediaSession" in navigator)) return;
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
@@ -440,6 +471,7 @@ async function softResume() {
   wantPlay = true;
   startPlayWatchdog();
   void requestWakeLock();
+  setSessionState("playing");
   if (mode === "youtube") {
     try {
       yt?.playVideo();
@@ -464,17 +496,27 @@ function keepAliveInBackground() {
     startPlayWatchdog();
     void requestWakeLock();
     void softResume();
+    if (lastTrackMeta) bindMediaSession(lastTrackMeta);
   };
 
-  document.addEventListener("visibilitychange", kick);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      // Keep session marked playing so OS media controls stay active
+      if (shouldAutoResume()) setSessionState("playing");
+      kick();
+    } else {
+      kick();
+    }
+  });
   window.addEventListener("pageshow", kick);
   window.addEventListener("focus", kick);
   window.addEventListener("online", () => {
     netRetries = 0;
     kick();
   });
-  document.addEventListener("resume", kick);
+  document.addEventListener("resume", kick as EventListener);
 
+  // Periodic recovery while page is backgrounded
   window.setInterval(() => {
     if (!shouldAutoResume()) return;
     if (mode === "audio" && audio && audio.paused) {
@@ -488,7 +530,8 @@ function keepAliveInBackground() {
         /* */
       }
     }
-  }, 2500);
+    if (shouldAutoResume()) setSessionState("playing");
+  }, 2000);
 }
 
 let inited = false;
@@ -577,6 +620,7 @@ async function getYtPlayer(): Promise<YtPlayer> {
               handlers?.onBuffer(false);
               startYtPoll();
               setSessionState("playing");
+              void requestWakeLock();
             } else if (e.data === YT_PAUSED) {
               if (userPaused || !wantPlay) {
                 handlers?.onPause();
@@ -622,6 +666,7 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
   try {
     await el.play();
     bindMediaSession(track);
+    setSessionState("playing");
     handlers?.onBuffer(false);
     return true;
   } catch {
@@ -629,6 +674,7 @@ async function playViaAudio(track: Track, url: string): Promise<boolean> {
     try {
       await el.play();
       bindMediaSession(track);
+      setSessionState("playing");
       handlers?.onBuffer(false);
       return true;
     } catch {
