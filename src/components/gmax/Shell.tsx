@@ -13,6 +13,7 @@ import { SettingsView } from "./SettingsView";
 import { PlaylistView } from "./PlaylistView";
 import { AddToPlaylist } from "./AddToPlaylist";
 import { SubscriptionModal } from "./SubscriptionModal";
+import { VoiceOrb } from "./VoiceOrb";
 
 const TABS: { id: TabId; label: string; Icon: typeof HomeIcon }[] = [
   { id: "home", label: "Home", Icon: HomeIcon },
@@ -39,6 +40,9 @@ export function Shell() {
 
       {hasTrack && !floatBall ? <MiniPlayer /> : null}
       {hasTrack && floatBall ? <FloatBall /> : null}
+
+      {/* Gemini-style voice orb — always available after onboarding */}
+      <VoiceOrb />
 
       <nav className="absolute inset-x-0 bottom-0 z-20 border-t border-hairline bg-raised pb-[env(safe-area-inset-bottom)]">
         <div className="grid h-[68px] grid-cols-4">
